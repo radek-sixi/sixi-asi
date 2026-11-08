@@ -363,7 +363,7 @@ Result<SpeculativeStepResult> SpeculativeDecoder::step(
         current_last_logits = std::move(init_fw.value());
     }
 
-    if (cfg_.execution_mode == ExecutionMode::StrictReplay) {
+    if (!cfg_.adaptive_k) {
         current_k_ = cfg_.draft_k;
     }
 
@@ -693,7 +693,7 @@ Result<SpeculativeStepResult> SpeculativeDecoder::step(
         stats_.mean_acceptance_length =
             static_cast<double>(stats_.total_emitted_tokens) / static_cast<double>(stats_.total_steps);
 
-        if (cfg_.execution_mode == ExecutionMode::StrictReplay) {
+        if (!cfg_.adaptive_k) {
             current_k_ = cfg_.draft_k;
         } else {
             if (step_res.accepted_draft_count == proposed_k) {
@@ -938,7 +938,7 @@ Result<SpeculativeStepResult> SpeculativeDecoder::step(
         static_cast<double>(stats_.total_emitted_tokens) / static_cast<double>(stats_.total_steps);
 
     // Update current_k_ according to ExecutionMode
-    if (cfg_.execution_mode == ExecutionMode::StrictReplay) {
+    if (!cfg_.adaptive_k) {
         current_k_ = cfg_.draft_k;
     } else {
         if (step_res.accepted_draft_count == proposed_k) {

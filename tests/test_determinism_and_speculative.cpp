@@ -584,6 +584,7 @@ bool test_stochastic_sampling_suffix_drafter_fallback_and_adaptive_k() {
         SpeculativeConfig strict_cfg = adaptive_cfg;
         strict_cfg.execution_mode = ExecutionMode::StrictReplay;
         strict_cfg.draft_k = 4;
+        strict_cfg.adaptive_k = false; // fixed draft length (acceptance-driven k is a separate switch now)
         SpeculativeDecoder strict_dec(strict_cfg, target_b, drafter);
         for (int s = 0; s < 4; ++s) {
             SIXI_ASSERT(strict_dec.step(ctx, logits, greedy, rng).ok());

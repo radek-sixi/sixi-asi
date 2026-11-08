@@ -12,6 +12,7 @@
 #include <dlfcn.h>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <numeric>
 #include <string_view>
@@ -712,6 +713,30 @@ void ReferenceHybridBackend::ring_push() {
     }
 }
 
+Status ReferenceHybridBackend::device_snapshot_save(uint32_t slot) {
+    if (slot >= cfg_.device_snapshot_slots) {
+        return Status::Error(ErrorCode::InvalidArgument, "slot out of range");
+    }
+    if (ref_slots_.size() < cfg_.device_snapshot_slots) ref_slots_.resize(cfg_.device_snapshot_slots);
+    ref_slots_[slot] = RefSlot{true, history_tokens_, gdn_layers_};
+    return Status::Ok();
+}
+
+Status ReferenceHybridBackend::device_snapshot_restore(uint32_t slot) {
+    if (slot >= ref_slots_.size() || !ref_slots_[slot].valid) {
+        return Status::Error(ErrorCode::InvalidArgument, "slot empty");
+    }
+    history_tokens_ = ref_slots_[slot].tokens;
+    gdn_layers_ = ref_slots_[slot].gdn;
+    ring_reset();
+    return Status::Ok();
+}
+
+std::vector<int32_t> ReferenceHybridBackend::device_snapshot_tokens(uint32_t slot) const {
+    if (slot >= ref_slots_.size() || !ref_slots_[slot].valid) return {};
+    return ref_slots_[slot].tokens;
+}
+
 Status ReferenceHybridBackend::rollback_to_position(uint64_t target_seq_len) {
     if (!cfg_.enable_fast_rollback_ring) {
         return Status::Error(ErrorCode::BackendError, "Fast prefix rollback not enabled on ReferenceHybridBackend");
@@ -1177,6 +1202,7 @@ using fn_llama_get_logits_ith_t = float* (*)(void*, int32_t);
 using fn_llama_get_memory_t = void* (*)(const void*);
 using fn_llama_memory_clear_t = void (*)(void*, bool);
 using fn_llama_memory_seq_rm_t = bool (*)(void*, int32_t, int32_t, int32_t);
+using fn_llama_memory_seq_cp_t = void (*)(void*, int32_t, int32_t, int32_t, int32_t);
 using fn_llama_n_rs_seq_t = uint32_t (*)(const void*);
 using fn_llama_model_n_embd_t = int32_t (*)(const void*);
 using fn_llama_model_n_layer_nextn_t = int32_t (*)(const void*);
@@ -1299,6 +1325,17 @@ struct LlamaCppBackend::Impl {
     std::vector<int32_t> history_tokens;
     std::vector<float> history_h_nextn;
     size_t h_valid_from = 0; // first absolute position whose history_h_nextn row is trustworthy (after snapshot restore)
+
+    // Device-side snapshot slots: backend sequence ids 1..n hold copies of the live sequence 0
+    struct DeviceSlot {
+        bool valid = false;
+        std::vector<int32_t> tokens;
+        size_t mtp_synced_len = 0;
+        size_t dflash_synced_len = 0;
+        std::vector<float> h_rows; // last (n_rs_seq + 1) target hidden rows at save time
+    };
+    std::vector<DeviceSlot> device_slots;
+    uint32_t n_seq_total = 1;
     std::vector<q8_1_fp32_block> latest_h_q8_1_blocks;
     size_t mtp_synced_len = 0;
     size_t dflash_synced_len = 0;
@@ -1337,6 +1374,7 @@ struct LlamaCppBackend::Impl {
     fn_llama_get_memory_t llama_get_memory = nullptr;
     fn_llama_memory_clear_t llama_memory_clear = nullptr;
     fn_llama_memory_seq_rm_t llama_memory_seq_rm = nullptr;
+    fn_llama_memory_seq_cp_t llama_memory_seq_cp = nullptr;
     fn_llama_n_rs_seq_t llama_n_rs_seq = nullptr;
     fn_llama_model_n_embd_t llama_model_n_embd = nullptr;
     fn_llama_model_n_layer_nextn_t llama_model_n_layer_nextn = nullptr;
@@ -1449,7 +1487,18 @@ struct LlamaCppBackend::Impl {
         latest_h_q8_1_blocks.clear();
         mtp_synced_len = 0;
         dflash_synced_len = 0;
+        device_slots.clear();
+        n_seq_total = 1;
         telemetry = RuntimeTelemetry{};
+    }
+
+    // seq_rm / seq_cp across every context that holds per-sequence state
+    void for_each_memory(const std::function<void(void*)>& fn) {
+        for (void* c : {ctx, ctx_mtp, ctx_dflash}) {
+            if (c == nullptr) continue;
+            void* mem = llama_get_memory(c);
+            if (mem != nullptr) fn(mem);
+        }
     }
 
     size_t state_size_or_zero(void* c) const {
@@ -1778,6 +1827,7 @@ Status LlamaCppBackend::load_model(const LoadOptions& opts) {
     (void)resolve(impl_->llama_vocab_mask, "llama_vocab_mask");
     (void)resolve(impl_->llama_encode, "llama_encode");
     (void)resolve(impl_->llama_memory_seq_rm, "llama_memory_seq_rm");
+    (void)resolve(impl_->llama_memory_seq_cp, "llama_memory_seq_cp");
     (void)resolve(impl_->llama_n_rs_seq, "llama_n_rs_seq");
     (void)resolve(impl_->llama_model_n_embd, "llama_model_n_embd");
     (void)resolve(impl_->llama_model_n_layer_nextn, "llama_model_n_layer_nextn");
@@ -1856,8 +1906,16 @@ Status LlamaCppBackend::load_model(const LoadOptions& opts) {
         // GPU recurrent-state snapshot ring: O(1) rollback of up to n_rs_seq tokens (bounds the speculative draft k)
         const uint32_t n_rs_seq = (opts.n_rs_seq == 0) ? 8u : opts.n_rs_seq;
         const uint32_t n_outputs_max = std::max<uint32_t>(opts.n_outputs_max, n_rs_seq + 1u);
+        if (opts.device_snapshot_slots > 0 && impl_->llama_memory_seq_cp != nullptr && impl_->llama_memory_seq_rm != nullptr) {
+            // One live sequence plus N snapshot slots; llama.cpp divides n_ctx among sequences (n_ctx_seq = n_ctx / n_seq_max)
+            impl_->n_seq_total = 1u + opts.device_snapshot_slots;
+            impl_->device_slots.assign(opts.device_snapshot_slots, Impl::DeviceSlot{});
+            SIXI_CTX_SET(cparams, n_seq_max, impl_->n_seq_total);
+            SIXI_CTX_SET(cparams, n_ctx, n_ctx * impl_->n_seq_total);
+        }
         SIXI_CTX_SET(cparams, n_rs_seq, n_rs_seq);
-        SIXI_CTX_SET(cparams, n_outputs_max, n_outputs_max);
+        // llama.cpp reserves outputs for every sequence: the total must cover n_seq_max * per-sequence outputs
+        SIXI_CTX_SET(cparams, n_outputs_max, n_outputs_max * impl_->n_seq_total);
         SIXI_CTX_SET(cparams, n_outputs_max_per_seq, n_outputs_max);
         SIXI_CTX_SET(cparams, n_threads, n_threads);
         SIXI_CTX_SET(cparams, n_threads_batch, n_threads);
@@ -1915,6 +1973,7 @@ Status LlamaCppBackend::load_model(const LoadOptions& opts) {
         impl_->active_n_rs_seq = impl_->llama_n_rs_seq(impl_->ctx);
     }
     impl_->telemetry.active_n_rs_seq = impl_->active_n_rs_seq;
+    impl_->telemetry.device_snapshot_slot_count = static_cast<uint32_t>(impl_->device_slots.size());
     if (impl_->llama_model_n_embd != nullptr) {
         const int32_t e = impl_->llama_model_n_embd(impl_->model);
         if (e > 0) {
@@ -1927,11 +1986,12 @@ Status LlamaCppBackend::load_model(const LoadOptions& opts) {
         const int32_t embd_out = impl_->llama_model_n_embd_out(impl_->model);
         if (embd_out > 0) {
             LlamaContextParamsOpaque cparams_mtp = impl_->llama_context_default_params();
-            SIXI_CTX_SET(cparams_mtp, n_ctx, n_ctx);
+            SIXI_CTX_SET(cparams_mtp, n_ctx, n_ctx * impl_->n_seq_total);
+            SIXI_CTX_SET(cparams_mtp, n_seq_max, impl_->n_seq_total);
             SIXI_CTX_SET(cparams_mtp, n_batch, n_batch);
             SIXI_CTX_SET(cparams_mtp, n_ubatch, n_ubatch);
             SIXI_CTX_SET(cparams_mtp, n_rs_seq, 0u); // MTP head is dense attention, n_rs_seq = 0
-            SIXI_CTX_SET(cparams_mtp, n_outputs_max, 1u);
+            SIXI_CTX_SET(cparams_mtp, n_outputs_max, 1u * impl_->n_seq_total);
             SIXI_CTX_SET(cparams_mtp, n_outputs_max_per_seq, 1u);
             SIXI_CTX_SET(cparams_mtp, n_threads, n_threads);
             SIXI_CTX_SET(cparams_mtp, n_threads_batch, n_threads);
@@ -1987,7 +2047,8 @@ Status LlamaCppBackend::load_model(const LoadOptions& opts) {
             const int32_t* ids = impl_->llama_model_target_layer_ids(impl_->model_dflash);
             if (n_ids > 0 && ids != nullptr && impl_->n_embd_tgt > 0) {
                 LlamaContextParamsOpaque cparams_dft = impl_->llama_context_default_params();
-                SIXI_CTX_SET(cparams_dft, n_ctx, n_ctx);
+                SIXI_CTX_SET(cparams_dft, n_ctx, n_ctx * impl_->n_seq_total);
+                SIXI_CTX_SET(cparams_dft, n_seq_max, impl_->n_seq_total);
                 SIXI_CTX_SET(cparams_dft, n_batch, n_batch);
                 SIXI_CTX_SET(cparams_dft, n_ubatch, n_ubatch);
                 SIXI_CTX_SET(cparams_dft, n_threads, n_threads);
@@ -2220,21 +2281,11 @@ Status LlamaCppBackend::reset_state() {
     if (!is_loaded()) {
         return Status::Error(ErrorCode::BackendError, "LlamaCppBackend model is not loaded");
     }
-    void* mem = impl_->llama_get_memory(impl_->ctx);
-    if (mem != nullptr) {
-        impl_->llama_memory_clear(mem, true);
-    }
-    if (impl_->ctx_mtp != nullptr) {
-        void* mem_mtp = impl_->llama_get_memory(impl_->ctx_mtp);
-        if (mem_mtp != nullptr) {
-            impl_->llama_memory_clear(mem_mtp, true);
-        }
-    }
-    if (impl_->ctx_dflash != nullptr) {
-        void* mem_dflash = impl_->llama_get_memory(impl_->ctx_dflash);
-        if (mem_dflash != nullptr) {
-            impl_->llama_memory_clear(mem_dflash, true);
-        }
+    if (!impl_->device_slots.empty() && impl_->llama_memory_seq_rm != nullptr) {
+        // Device snapshot slots live in sequences 1..n: clear only the live sequence 0 and keep the slots
+        impl_->for_each_memory([&](void* mem) { (void)impl_->llama_memory_seq_rm(mem, 0, -1, -1); });
+    } else {
+        impl_->for_each_memory([&](void* mem) { impl_->llama_memory_clear(mem, true); });
     }
     impl_->history_tokens.clear();
     impl_->history_h_nextn.clear();
@@ -2243,6 +2294,84 @@ Status LlamaCppBackend::reset_state() {
     impl_->mtp_synced_len = 0;
     impl_->dflash_synced_len = 0;
     impl_->last_sampled_token = -1;
+    if (impl_->device_slots.empty() || impl_->llama_memory_seq_rm == nullptr) {
+        for (auto& slot : impl_->device_slots) {
+            slot = Impl::DeviceSlot{}; // llama_memory_clear wiped every sequence
+        }
+    }
+    return Status::Ok();
+}
+
+// ---- device-side prefix snapshots -------------------------------------------------------------
+
+uint32_t LlamaCppBackend::device_snapshot_slots() const noexcept {
+    return (impl_ && is_loaded()) ? static_cast<uint32_t>(impl_->device_slots.size()) : 0u;
+}
+
+std::vector<int32_t> LlamaCppBackend::device_snapshot_tokens(uint32_t slot) const {
+    if (!impl_ || slot >= impl_->device_slots.size() || !impl_->device_slots[slot].valid) {
+        return {};
+    }
+    return impl_->device_slots[slot].tokens;
+}
+
+Status LlamaCppBackend::device_snapshot_save(uint32_t slot) {
+    if (!is_loaded() || slot >= impl_->device_slots.size()) {
+        return Status::Error(ErrorCode::InvalidArgument, "device snapshot slot out of range");
+    }
+    const int32_t seq = static_cast<int32_t>(slot) + 1;
+    // Drop whatever the slot held, then share/copy the live sequence into it (KV: cell share or stream copy;
+    // recurrent: shared cell with copy-on-write on the next write to sequence 0)
+    impl_->for_each_memory([&](void* mem) {
+        (void)impl_->llama_memory_seq_rm(mem, seq, -1, -1);
+        impl_->llama_memory_seq_cp(mem, 0, seq, -1, -1);
+    });
+    auto& ds = impl_->device_slots[slot];
+    ds.valid = true;
+    ds.tokens = impl_->history_tokens;
+    ds.mtp_synced_len = impl_->mtp_synced_len;
+    ds.dflash_synced_len = impl_->dflash_synced_len;
+    ds.h_rows.clear();
+    const size_t embd = static_cast<size_t>(impl_->n_embd);
+    const size_t N = impl_->history_tokens.size();
+    if (embd > 0 && N > 0 && impl_->history_h_nextn.size() >= N * embd) {
+        const size_t want = std::min<size_t>(N, static_cast<size_t>(impl_->active_n_rs_seq) + 1u);
+        const size_t avail = (N > impl_->h_valid_from) ? (N - impl_->h_valid_from) : 0u;
+        const size_t rows = std::min(want, avail);
+        ds.h_rows.assign(impl_->history_h_nextn.begin() + static_cast<std::ptrdiff_t>((N - rows) * embd),
+                         impl_->history_h_nextn.begin() + static_cast<std::ptrdiff_t>(N * embd));
+    }
+    impl_->telemetry.device_snapshots_saved++;
+    return Status::Ok();
+}
+
+Status LlamaCppBackend::device_snapshot_restore(uint32_t slot) {
+    if (!is_loaded() || slot >= impl_->device_slots.size() || !impl_->device_slots[slot].valid) {
+        return Status::Error(ErrorCode::InvalidArgument, "device snapshot slot is empty");
+    }
+    const int32_t seq = static_cast<int32_t>(slot) + 1;
+    impl_->for_each_memory([&](void* mem) {
+        (void)impl_->llama_memory_seq_rm(mem, 0, -1, -1);
+        impl_->llama_memory_seq_cp(mem, seq, 0, -1, -1);
+    });
+    const auto& ds = impl_->device_slots[slot];
+    impl_->history_tokens = ds.tokens;
+    impl_->mtp_synced_len = std::min(ds.mtp_synced_len, ds.tokens.size());
+    impl_->dflash_synced_len = std::min(ds.dflash_synced_len, ds.tokens.size());
+    impl_->last_sampled_token = -1;
+    const size_t embd = static_cast<size_t>(impl_->n_embd);
+    const size_t N = ds.tokens.size();
+    if (embd > 0) {
+        impl_->history_h_nextn.assign(N * embd, 0.0f);
+        const size_t rows = (embd > 0) ? ds.h_rows.size() / embd : 0;
+        if (rows > 0 && rows <= N) {
+            std::memcpy(impl_->history_h_nextn.data() + (N - rows) * embd, ds.h_rows.data(), ds.h_rows.size() * sizeof(float));
+            impl_->h_valid_from = N - rows;
+        } else {
+            impl_->h_valid_from = N;
+        }
+    }
+    impl_->telemetry.device_snapshots_restored++;
     return Status::Ok();
 }
 
@@ -2845,11 +2974,14 @@ uint32_t LlamaCppBackend::preferred_draft_k() const noexcept {
     if (!is_loaded()) {
         return 0;
     }
+    // Measured on Thor / Qwen3.8-27B: every extra verify row costs ~17 ms because the 48 GDN layers scan the batch
+    // tokens sequentially, so the optimum is short drafts even for a block drafter: DFlash2 k=3 (19-23 tok/s)
+    // beats k=7 (13-20 tok/s); chained MTP k=2..4 within noise, k>=5 slower (each draft = MTP decode + lm_head).
     if (impl_->ctx_dflash != nullptr) {
-        return static_cast<uint32_t>(std::max(1, impl_->dflash_block_size - 1));
+        return static_cast<uint32_t>(std::min(3, std::max(1, impl_->dflash_block_size - 1)));
     }
     if (impl_->ctx_mtp != nullptr && impl_->n_embd > 0) {
-        return 3u; // measured on Thor/27B: k=2..4 within noise, k>=5 slower (each draft = MTP decode + lm_head)
+        return 3u;
     }
     return 0;
 }

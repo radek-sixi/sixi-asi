@@ -23,7 +23,7 @@ using namespace sixi_asi;
 namespace {
 
 void print_usage() {
-    std::cout << "SIXI-ASI CLI v0.8.0\n"
+    std::cout << "SIXI-ASI CLI v0.8.1\n"
               << "Commands:\n"
               << "  manifest-build --shard <gguf> [--shard <gguf2> ...] --out <file.sixi>\n"
               << "                 [--id <id>] [--drafter <mtp.gguf>] [--neural-drafter none|mtp|dflash2]\n"

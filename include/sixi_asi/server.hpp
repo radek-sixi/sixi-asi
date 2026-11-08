@@ -257,7 +257,9 @@ struct ServerConfig {
     ExecutionMode execution_mode = ExecutionMode::StrictReplay;
     uint32_t draft_k = 0;                   // 0 = auto (backend rollback window, capped at 7 = llama.cpp MMVQ batch limit - 1)
     bool disable_speculation = false;       // force plain autoregressive decoding (A/B baselines)
-    uint32_t max_adaptive_k = 8;            // Adaptive mode only: upper bound for the per-step draft length
+    bool adaptive_draft_k = true;           // acceptance-driven draft length (deterministic; on in every mode)
+    uint32_t min_adaptive_k = 2;
+    uint32_t max_adaptive_k = 7;            // upper bound for the per-step draft length (also capped by the rollback window)
     bool use_neural_drafter = true;         // use the backend-embedded MTP / DFlash2 drafter when present
     bool enable_prefix_cache = true;        // reuse backend state across requests sharing a token prefix
     uint32_t prefix_cache_slots = 4;        // LRU depth of post-prefill snapshots (each ~ KV + recurrent state)

@@ -4,17 +4,19 @@ Speculative-decoding inference server for hybrid Gated-DeltaNet + attention LLMs
 unified-memory hardware. C++20, OpenAI-compatible HTTP API, llama.cpp as the compute backend, zero Python on the
 inference path.
 
-This is a public fork of a private research and development branch. Version 0.8.0.
+This is a public fork of a private research and development branch. Version 0.8.1.
 
 ## What it does
 
 - **Speculative decoding with O(1) state rollback** for hybrid recurrent models: anchored suffix drafter, the model's
   embedded multi-token-prediction head, or an external DFlash2 block drafter, verified in one batched target pass and
-  rolled back through llama.cpp's recurrent snapshot ring. Greedy and sampled (temperature > 0) decoding are both
-  lossless with respect to plain autoregressive sampling.
-- **Prefix cache across requests**: live-state continuation, O(1) rollback within the snapshot ring, and composite
-  state snapshots (target + drafter contexts) kept in RAM and optionally on NVMe. Second turn of a 1.1k-token
-  conversation: TTFT 168 ms instead of 3.4 s.
+  rolled back through llama.cpp's recurrent snapshot ring. Draft length follows acceptance (2..7; every extra verify
+  row costs ~17 ms on Thor because recurrent layers scan batch tokens sequentially). Greedy and sampled
+  (temperature > 0) decoding are both lossless with respect to plain autoregressive sampling.
+- **Prefix cache across requests**: live-state continuation, O(1) rollback within the snapshot ring, device-side
+  snapshot slots (spare backend sequences filled with `llama_memory_seq_cp` in ~1 ms, post-prefill logits kept per
+  slot) and optional NVMe persistence. A repeated prompt needs no forward at all (TTFT 1 ms vs 1.3 s cold); the
+  second turn of a conversation reuses 314 of 336 tokens (216 ms).
 - **Native Qwen3.8 chat template** (tools, reasoning effort, thinking on/off, tool round trips), byte-identical to
   llama.cpp's Jinja rendering; reasoning budgets that force `</think>` instead of returning an empty answer;
   cycle-based loop detection scoped to the reasoning span; schema-validated tool calls.
@@ -29,12 +31,12 @@ except ollama (its bundled runtime).
 
 | Engine (Q4_K_M) | decode tok/s, mean of 5 tasks | vs llama-server AR |
 |---|---|---|
-| **sixi-asi, DFlash2 drafter k=7** | **21.9** | **2.00x** |
-| ollama 0.40.13, built-in draft-mtp | 21.1 | 1.93x |
+| **sixi-asi, DFlash2 drafter, acceptance-driven k 2..7, device snapshot slots** | **23.2** | **2.09x** |
+| ollama 0.40.13, built-in draft-mtp | 21.3 | 1.93x |
 | llama-server `--spec-type draft-dflash` | 20.4 | 1.85x |
 | sixi-asi, embedded MTP k=3 | 20.2 | 1.84x |
 | llama-server `--spec-type draft-mtp` | 19.9 | 1.80x |
-| llama-server AR | 11.0 | 1.00x |
+| llama-server AR | 11.1 | 1.00x |
 
 Quality gate (`scripts/intel_eval.py`, reasoning effort low, greedy): sixi-asi 28/30 GSM8K, 16/20 HumanEval-lite,
 tool protocol and needle pass; llama-server AR 27/30, 15/20, pass, pass. Chat-template parity vs llama-server
@@ -68,8 +70,8 @@ curl -s localhost:8089/v1/chat/completions -d '{
   "max_tokens": 256, "temperature": 0, "reasoning_budget_tokens": 512 }'
 ```
 
-Useful flags: `--spec-k N`, `--no-spec`, `--kv-type q8_0`, `--snapshot-dir PATH`, `--api-key KEY`,
-`--max-concurrent N`, `--mode strict-replay|adaptive`. `GET /health`, `/metrics`, `POST /apply-template`.
+Useful flags: `--spec-k N`, `--spec-k-max N`, `--spec-k-fixed`, `--no-spec`, `--device-slots N`, `--kv-type q8_0`,
+`--snapshot-dir PATH`, `--api-key KEY`, `--max-concurrent N`, `--mode strict-replay|adaptive`. `GET /health`, `/metrics`, `POST /apply-template`.
 
 ## Reproduce the numbers
 

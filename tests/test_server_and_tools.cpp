@@ -480,6 +480,69 @@ bool test_qwen38_template_and_function_call_syntax() {
     return true;
 }
 
+bool test_prefix_cache_device_slots() {
+    using namespace sixi_asi;
+    using namespace sixi_asi::core;
+    using namespace sixi_asi::server;
+
+    ReferenceHybridBackend::Config bcfg;
+    bcfg.vocab_size = 256;
+    bcfg.hidden_size = 64;
+    bcfg.n_layers = 2;
+    bcfg.n_experts = 8;
+    bcfg.top_k = 2;
+    bcfg.enable_fast_rollback_ring = true;
+    bcfg.rollback_ring = 4;
+    bcfg.device_snapshot_slots = 2;
+    auto backend = std::make_shared<ReferenceHybridBackend>(bcfg);
+
+    ServerConfig scfg;
+    scfg.port = 0;
+    scfg.manifest.model_name = "ref";
+    scfg.admission.admitted = true;
+    scfg.n_ctx = 4096;
+    SixiServer server(scfg, backend);
+
+    ChatCompletionRequest req;
+    req.messages.push_back(ChatMessage{});
+    req.messages.back().role = "user";
+    req.messages.back().content = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau";
+    req.budgets.max_tokens = 4;
+    auto r1 = server.handle_chat_completion(req);
+    SIXI_ASSERT(r1.ok());
+    SIXI_ASSERT(r1->prompt_cached_tokens == 0);
+    const auto text1 = r1->content + r1->reasoning_content;
+
+    // Same prompt again: restored from a device slot, one token re-evaluated, identical output
+    auto r2 = server.handle_chat_completion(req);
+    SIXI_ASSERT(r2.ok());
+    SIXI_ASSERT(r2->prompt_cached_tokens == r2->prompt_tokens);
+    SIXI_ASSERT(r2->content + r2->reasoning_content == text1);
+
+    // Second turn (previous prompt + assistant answer + new user message): the previous prompt is a prefix of the
+    // new one -> only the new tail is prefilled
+    req.messages.push_back(ChatMessage{});
+    req.messages.back().role = "assistant";
+    req.messages.back().content = r1->content;
+    req.messages.push_back(ChatMessage{});
+    req.messages.back().role = "user";
+    req.messages.back().content = "upsilon phi chi psi omega";
+    auto r3 = server.handle_chat_completion(req);
+    SIXI_ASSERT(r3.ok());
+    SIXI_ASSERT(r3->prompt_cached_tokens > 0 && r3->prompt_cached_tokens < r3->prompt_tokens);
+
+    // Unrelated single-turn prompt: only the template preamble is shared, which is shorter than any slot -> no reuse
+    ChatCompletionRequest req4;
+    req4.messages.push_back(ChatMessage{});
+    req4.messages.back().role = "user";
+    req4.messages.back().content = "a totally different question about something else entirely with enough words";
+    req4.budgets.max_tokens = 4;
+    auto r4 = server.handle_chat_completion(req4);
+    SIXI_ASSERT(r4.ok());
+    SIXI_ASSERT(r4->prompt_cached_tokens == 0);
+    return true;
+}
+
 bool test_sixi_asi_server_http_sse_cancellation_concurrency_and_admission() {
     using namespace sixi_asi;
     using namespace sixi_asi::core;
@@ -655,6 +718,7 @@ int main() {
     RUN_TEST(test_tool_call_validator);
     RUN_TEST(test_loop_detector_and_budget_tracker);
     RUN_TEST(test_qwen38_template_and_function_call_syntax);
+    RUN_TEST(test_prefix_cache_device_slots);
     RUN_TEST(test_sixi_asi_server_http_sse_cancellation_concurrency_and_admission);
 
     std::cout << "Summary: " << passed << " passed, " << failed << " failed\n";

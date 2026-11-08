@@ -50,11 +50,13 @@ void usage() {
         "  --threads N             CPU threads for the backend (default 8)\n"
         "  --gpu-layers N          layers offloaded to GPU (default 999)\n"
         "  --spec-k N              draft tokens per step (default: min(backend rollback window, 7))\n"
-        "  --spec-k-max N          adaptive mode: max draft tokens per step (default 8)\n"
+        "  --spec-k-max N          upper bound of the acceptance-driven draft length (default 7)\n"
+        "  --spec-k-fixed          disable acceptance-driven draft length (always --spec-k tokens)\n"
         "  --kv-type T             KV cache type f16|bf16|q8_0|q4_0 (default: library f16; quantized V enables flash-attn)\n"
         "  --no-neural-drafter     suffix drafter only (no MTP / DFlash2)\n"
         "  --no-spec               plain autoregressive decoding (baseline for A/B)\n"
         "  --n-rs-seq N            recurrent snapshot ring depth (default 8; bounds O(1) rollback and draft k)\n"
+        "  --device-slots N        device-side prefix snapshot slots (extra sequences; default 4, 0 = host snapshots)\n"
         "  --no-gpu-sampler        host argmax instead of the GPU backend sampler\n"
         "  --no-mtp-load           do not create the embedded MTP draft context\n"
         "  --no-prefix-cache       disable cross-request KV/state reuse\n"
@@ -84,10 +86,12 @@ int main(int argc, char** argv) {
     uint32_t n_batch = 512;
     uint32_t n_threads = 8;
     uint32_t spec_k = 0;
-    uint32_t spec_k_max = 8;
+    uint32_t spec_k_max = 7;
+    bool spec_k_adaptive = true;
     int32_t kv_type_k = -1;
     int32_t kv_type_v = -1;
     uint32_t n_rs_seq = 8;
+    uint32_t device_slots = 4;
     bool gpu_sampler = true;
     bool load_mtp = true;
     bool use_neural_drafter = true;
@@ -139,6 +143,7 @@ int main(int argc, char** argv) {
         else if (arg == "--threads") n_threads = static_cast<uint32_t>(need_int("--threads", next(), 1, 256));
         else if (arg == "--spec-k") spec_k = static_cast<uint32_t>(need_int("--spec-k", next(), 0, 16));
         else if (arg == "--spec-k-max") spec_k_max = static_cast<uint32_t>(need_int("--spec-k-max", next(), 1, 16));
+        else if (arg == "--spec-k-fixed") spec_k_adaptive = false;
         else if (arg == "--kv-type") {
             const std::string v = next();
             int32_t t = -1;
@@ -148,6 +153,7 @@ int main(int argc, char** argv) {
         }
         else if (arg == "--no-neural-drafter") use_neural_drafter = false;
         else if (arg == "--n-rs-seq") n_rs_seq = static_cast<uint32_t>(need_int("--n-rs-seq", next(), 0, 32));
+        else if (arg == "--device-slots") device_slots = static_cast<uint32_t>(need_int("--device-slots", next(), 0, 16));
         else if (arg == "--no-gpu-sampler") gpu_sampler = false;
         else if (arg == "--no-mtp-load") load_mtp = false;
         else if (arg == "--no-spec") disable_speculation = true;
@@ -173,6 +179,7 @@ int main(int argc, char** argv) {
     scfg.use_neural_drafter = use_neural_drafter;
     scfg.disable_speculation = disable_speculation;
     scfg.max_adaptive_k = spec_k_max;
+    scfg.adaptive_draft_k = spec_k_adaptive;
     scfg.enable_prefix_cache = enable_prefix_cache;
     scfg.prefix_cache_slots = prefix_cache_slots;
     scfg.snapshot_dir = snapshot_dir;
@@ -256,6 +263,7 @@ int main(int argc, char** argv) {
         lopts.kv_type_k = kv_type_k;
         lopts.kv_type_v = kv_type_v;
         lopts.n_rs_seq = n_rs_seq;
+        lopts.device_snapshot_slots = device_slots;
         lopts.enable_gpu_greedy_sampler = gpu_sampler;
         lopts.load_embedded_mtp = load_mtp;
         lopts.mode = mode;

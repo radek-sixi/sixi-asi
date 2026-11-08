@@ -230,6 +230,13 @@ public:
     // one-hot pseudo-logits; callers that sample with temperature > 0 MUST disable it first.
     virtual void set_gpu_greedy_sampling_enabled(bool enabled) noexcept { (void)enabled; }
 
+    // Device-side prefix snapshots: extra backend sequences used as O(ms) copies of the live state
+    // (llama_memory_seq_cp), replacing host state copies on the TTFT path. 0 = unsupported.
+    virtual uint32_t device_snapshot_slots() const noexcept { return 0; }
+    virtual Status device_snapshot_save(uint32_t slot) { (void)slot; return Status::Error(ErrorCode::BackendError, "device snapshots unsupported"); }
+    virtual Status device_snapshot_restore(uint32_t slot) { (void)slot; return Status::Error(ErrorCode::BackendError, "device snapshots unsupported"); }
+    virtual std::vector<int32_t> device_snapshot_tokens(uint32_t slot) const { (void)slot; return {}; }
+
     // Optional fast O(1) GPU prefix rollback & embedded MTP drafting (Section 8)
     virtual bool supports_fast_prefix_rollback() const noexcept { return false; }
     // Max number of trailing tokens rollback_to_position() can remove in O(1) (0 = unsupported).
@@ -298,6 +305,7 @@ public:
         // last `rollback_ring` tokens so rollback_to_position() is O(1) and the fast speculative path is exercised.
         bool enable_fast_rollback_ring = false;
         uint32_t rollback_ring = 8;
+        uint32_t device_snapshot_slots = 0; // test-only emulation of device-side snapshot slots
     };
 
     explicit ReferenceHybridBackend(const Config& cfg);
@@ -321,6 +329,10 @@ public:
         const std::vector<int32_t>& input_tokens) override;
 
     std::vector<int32_t> context_tokens() const override { return history_tokens_; }
+    uint32_t device_snapshot_slots() const noexcept override { return cfg_.device_snapshot_slots; }
+    Status device_snapshot_save(uint32_t slot) override;
+    Status device_snapshot_restore(uint32_t slot) override;
+    std::vector<int32_t> device_snapshot_tokens(uint32_t slot) const override;
     bool supports_fast_prefix_rollback() const noexcept override { return cfg_.enable_fast_rollback_ring; }
     uint32_t fast_rollback_window() const noexcept override { return cfg_.enable_fast_rollback_ring ? cfg_.rollback_ring : 0u; }
     uint64_t current_seq_len() const noexcept override { return history_tokens_.size(); }
@@ -340,6 +352,8 @@ private:
     // Rollback ring: ring_states_[i] is the GDN state after ring_base_ + i tokens
     std::vector<std::vector<GdnLayerState>> ring_states_;
     uint64_t ring_base_ = 0;
+    struct RefSlot { bool valid = false; std::vector<int32_t> tokens; std::vector<GdnLayerState> gdn; };
+    std::vector<RefSlot> ref_slots_;
     void ring_reset();
     void ring_push();
     // Deterministic weight matrices
@@ -374,6 +388,7 @@ public:
         double initial_offload_alpha = 0.25;           // Initial CPU/PCIe offload alpha (P0.2)
         uint32_t n_rs_seq = 8;                         // Recurrent-state snapshot ring depth (max O(1) rollback = n_rs_seq tokens)
         uint32_t n_outputs_max = 16;                   // Max logits/sampler outputs per ubatch (>= 1 + max draft k)
+        uint32_t device_snapshot_slots = 4;            // extra sequences for O(ms) device-side prefix snapshots (0 = off)
         int32_t kv_type_k = -1;                        // ggml type for the K cache (-1 = library default f16; 8 = q8_0, 2 = q4_0)
         int32_t kv_type_v = -1;                        // ggml type for the V cache (quantized V requires flash attention)
     };
@@ -406,6 +421,9 @@ public:
         uint64_t dflash_draft_unsynced = 0;    // drafts refused because the draft KV lagged the target
         uint64_t state_snapshots_taken = 0;
         uint64_t state_snapshots_restored = 0;
+        uint64_t device_snapshots_saved = 0;
+        uint64_t device_snapshots_restored = 0;
+        uint32_t device_snapshot_slot_count = 0;
         uint64_t last_state_snapshot_bytes = 0;
         NumericHealthReport last_numeric_health{};
     };
@@ -442,6 +460,11 @@ public:
 
     Result<std::vector<std::vector<float>>> forward_sequence_all_logits(
         const std::vector<int32_t>& input_tokens) override;
+
+    uint32_t device_snapshot_slots() const noexcept override;
+    Status device_snapshot_save(uint32_t slot) override;
+    Status device_snapshot_restore(uint32_t slot) override;
+    std::vector<int32_t> device_snapshot_tokens(uint32_t slot) const override;
 
     bool supports_fast_prefix_rollback() const noexcept override;
     uint32_t fast_rollback_window() const noexcept override;

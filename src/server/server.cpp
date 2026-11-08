@@ -1404,7 +1404,12 @@ struct SixiServer::Impl {
     uint64_t cumulative_spec_emitted = 0;
 
     // Prefix cache: LRU of post-prefill backend snapshots keyed by prompt tokens (guarded by backend_mutex)
-    std::vector<core::BackendSequenceState> prefix_snapshots; // most recently used last
+    std::vector<core::BackendSequenceState> prefix_snapshots; // most recently used last (host copies; used when the
+                                                               // backend has no device-side snapshot slots)
+    std::vector<uint64_t> device_slot_last_use;               // LRU stamps for backend device snapshot slots
+    uint64_t device_slot_clock = 0;
+    struct SlotLogits { std::vector<float> logits; int32_t greedy_token = -1; };
+    std::vector<SlotLogits> device_slot_logits;               // post-prefill logits per slot: an identical prompt needs no forward at all
     uint64_t prefix_cache_hits = 0;
     uint64_t prefix_cache_reused_tokens = 0;
 
@@ -2138,7 +2143,54 @@ Result<ChatCompletionResponse> SixiServer::handle_chat_completion(
                     }
                 }
             }
-            if (!done && !impl_->prefix_snapshots.empty()) {
+            const uint32_t n_dev_slots = impl_->backend->device_snapshot_slots();
+            if (!done && n_dev_slots > 0) {
+                // Device-side snapshot slots: longest slot whose tokens are a prefix of the prompt
+                const uint32_t window = impl_->backend->fast_rollback_window();
+                int best = -1;
+                size_t best_len = 0;
+                for (uint32_t sidx = 0; sidx < n_dev_slots; ++sidx) {
+                    const std::vector<int32_t> st = impl_->backend->device_snapshot_tokens(sidx);
+                    if (st.empty() || st.size() > n || st.size() <= best_len) continue;
+                    if (st.size() == n && window == 0) continue;
+                    if (std::equal(st.begin(), st.end(), prompt_tokens.begin())) {
+                        best = static_cast<int>(sidx);
+                        best_len = st.size();
+                    }
+                }
+                if (best >= 0 && impl_->backend->device_snapshot_restore(static_cast<uint32_t>(best)).ok()) {
+                    if (impl_->device_slot_last_use.size() < n_dev_slots) impl_->device_slot_last_use.resize(n_dev_slots, 0);
+                    if (impl_->device_slot_logits.size() < n_dev_slots) impl_->device_slot_logits.resize(n_dev_slots);
+                    auto& sl = impl_->device_slot_logits[static_cast<size_t>(best)];
+                    if (best_len == n && (!sl.logits.empty() || sl.greedy_token >= 0)) {
+                        // Identical prompt: the post-prefill logits were kept with the slot, nothing to evaluate
+                        current_logits = sl.logits;
+                        if (sl.greedy_token >= 0) {
+                            impl_->backend->set_last_sampled_greedy_token(sl.greedy_token);
+                        }
+                        reused = n;
+                        done = true;
+                    } else if (best_len < n) {
+                        Status st = prefill_from(best_len);
+                        if (!st.ok()) {
+                            return st;
+                        }
+                        reused = best_len;
+                        done = true;
+                    } else if (impl_->backend->rollback_to_position(n - 1).ok()) {
+                        Status st = prefill_from(n - 1);
+                        if (!st.ok()) {
+                            return st;
+                        }
+                        reused = n - 1;
+                        done = true;
+                    }
+                    if (done) {
+                        impl_->device_slot_last_use[static_cast<size_t>(best)] = ++impl_->device_slot_clock;
+                    }
+                }
+            }
+            if (!done && n_dev_slots == 0 && !impl_->prefix_snapshots.empty()) {
                 // Longest snapshot whose tokens are a prefix of the prompt (an identical prompt is allowed when
                 // the backend can roll back the final token so its logits are recomputed)
                 const uint32_t window = impl_->backend->fast_rollback_window();
@@ -2223,7 +2275,29 @@ Result<ChatCompletionResponse> SixiServer::handle_chat_completion(
     // Snapshot the post-prefill state for later requests sharing this prompt as a prefix (LRU).
     // Skipped for short prompts: re-prefilling them is cheaper than copying the state.
     const auto t_snapshot_start = std::chrono::steady_clock::now();
-    if (impl_->cfg.enable_prefix_cache && impl_->cfg.prefix_cache_slots > 0 &&
+    const uint32_t n_dev_slots_save = impl_->backend->device_snapshot_slots();
+    if (impl_->cfg.enable_prefix_cache && n_dev_slots_save > 0 && prompt_tokens.size() >= 8) {
+        // Device-side slot: O(ms), so every non-trivial prompt is worth keeping. Reuse a slot holding the same
+        // tokens, else evict the least recently used one.
+        if (impl_->device_slot_last_use.size() < n_dev_slots_save) impl_->device_slot_last_use.resize(n_dev_slots_save, 0);
+        int target = -1;
+        for (uint32_t sidx = 0; sidx < n_dev_slots_save; ++sidx) {
+            if (impl_->backend->device_snapshot_tokens(sidx) == prompt_tokens) { target = -2; break; }
+        }
+        if (target != -2) {
+            uint64_t oldest = UINT64_MAX;
+            for (uint32_t sidx = 0; sidx < n_dev_slots_save; ++sidx) {
+                if (impl_->device_slot_last_use[sidx] < oldest) { oldest = impl_->device_slot_last_use[sidx]; target = static_cast<int>(sidx); }
+            }
+            if (target >= 0 && impl_->backend->device_snapshot_save(static_cast<uint32_t>(target)).ok()) {
+                impl_->device_slot_last_use[static_cast<size_t>(target)] = ++impl_->device_slot_clock;
+                if (impl_->device_slot_logits.size() < n_dev_slots_save) impl_->device_slot_logits.resize(n_dev_slots_save);
+                auto& sl = impl_->device_slot_logits[static_cast<size_t>(target)];
+                sl.logits = current_logits;
+                sl.greedy_token = impl_->backend->supports_gpu_greedy_sampling() ? impl_->backend->last_sampled_greedy_token() : -1;
+            }
+        }
+    } else if (impl_->cfg.enable_prefix_cache && impl_->cfg.prefix_cache_slots > 0 &&
         prompt_tokens.size() >= impl_->cfg.min_snapshot_tokens) {
         bool already = false;
         for (const auto& snap : impl_->prefix_snapshots) {
@@ -2278,7 +2352,14 @@ Result<ChatCompletionResponse> SixiServer::handle_chat_completion(
     } else {
         spec_cfg.neural_drafter = NeuralDrafterType::None;
     }
-    spec_cfg.max_adaptive_k = std::max<uint32_t>(1u, impl_->cfg.max_adaptive_k);
+    spec_cfg.adaptive_k = impl_->cfg.adaptive_draft_k;
+    spec_cfg.min_adaptive_k = std::max<uint32_t>(1u, impl_->cfg.min_adaptive_k);
+    {
+        const uint32_t window = impl_->backend->fast_rollback_window();
+        uint32_t kmax = std::max<uint32_t>(spec_cfg.min_adaptive_k, impl_->cfg.max_adaptive_k);
+        if (window > 0) kmax = std::min(kmax, window);
+        spec_cfg.max_adaptive_k = kmax;
+    }
     if (impl_->cfg.draft_k > 0) {
         spec_cfg.draft_k = impl_->cfg.draft_k;
     } else {
@@ -2609,6 +2690,16 @@ Result<ChatCompletionResponse> SixiServer::handle_chat_completion(
             }
         }
         impl_->completed_requests.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    // Persist the post-generation state for the NVMe session cache (off the TTFT path; the next turn of this
+    // conversation restores it and prefills only the new messages)
+    if (!cancelled && !impl_->cfg.snapshot_dir.empty() && impl_->backend->device_snapshot_slots() > 0 &&
+        context_tokens.size() >= impl_->cfg.snapshot_disk_min_tokens) {
+        auto ck = impl_->backend->checkpoint_state(rng);
+        if (ck.ok() && !ck->opaque_backend_state.empty()) {
+            impl_->persist_snapshot_async(ck.value());
+        }
     }
 
     backend_lock.unlock();

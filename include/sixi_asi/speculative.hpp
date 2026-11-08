@@ -96,7 +96,11 @@ struct SpeculativeConfig {
     bool enable_suffix_drafter = true;
     uint32_t suffix_min_match_len = 3;
     NeuralDrafterType neural_drafter = NeuralDrafterType::MTP; // Only ONE neural drafter allowed
-    uint32_t draft_k = 4;      // Fixed in StrictReplay; initial k in Adaptive
+    uint32_t draft_k = 4;      // Initial draft length (fixed when adaptive_k is false)
+    // Acceptance-driven draft length: +1 after a fully accepted step, -1 when fewer than half the drafts were
+    // accepted, clamped to [min_adaptive_k, max_adaptive_k]. Deterministic for identical inputs, so it stays on
+    // in StrictReplay; it only changes how many tokens are verified per step, never which tokens are emitted.
+    bool adaptive_k = true;
     uint32_t min_adaptive_k = 1;
     uint32_t max_adaptive_k = 8;
 };

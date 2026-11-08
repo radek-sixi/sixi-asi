@@ -106,6 +106,7 @@ Result<SingleRunMetrics> execute_benchmark_run(
     scfg.enable_suffix_drafter = (spec_k > 0);
     scfg.neural_drafter = (spec_k > 0) ? NeuralDrafterType::MTP : NeuralDrafterType::None;
     scfg.draft_k = spec_k;
+    scfg.adaptive_k = false; // the bench measures the labelled fixed k
     speculative::SpeculativeDecoder spec_dec(scfg, backend, nullptr);
 
     while (m.generated_tokens.size() < max_tokens) {
@@ -349,6 +350,7 @@ int main(int argc, char** argv) {
         lopts.model_path = model_path;
         lopts.draft_model_path = draft_model_path;
         lopts.n_rs_seq = n_rs_seq;
+        lopts.device_snapshot_slots = 0; // the bench measures the raw decode path
         lopts.n_threads = n_threads;
         lopts.n_batch = n_batch;
         lopts.n_ubatch = n_batch;
