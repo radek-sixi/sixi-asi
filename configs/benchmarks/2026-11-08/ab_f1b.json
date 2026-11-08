@@ -1,0 +1,698 @@
+{
+  "max_tokens": 256,
+  "repeats": 2,
+  "temperature": 0.0,
+  "engines": {
+    "sixi-dflash": "http://127.0.0.1:8091",
+    "llama-ar": "http://127.0.0.1:8099",
+    "llama-mtp": "http://127.0.0.1:8097",
+    "ollama": "http://127.0.0.1:11434@qwen3.8:27b"
+  },
+  "tasks": [
+    {
+      "name": "GSM8K-Math",
+      "engines": {
+        "sixi-dflash": {
+          "runs_decode_tok_s": [
+            22.145344651416313,
+            22.26879616641973
+          ],
+          "runs_ttft_s": [
+            0.8379703959799372,
+            0.8403583420440555
+          ],
+          "decode_tok_s_median": 22.20707040891802,
+          "decode_tok_s_mean": 22.20707040891802,
+          "decode_tok_s_stdev": 0.0617257575017085,
+          "ttft_s_median": 0.8391643690119963,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": {
+            "decode_tok_per_s": 21.8010193373168,
+            "mean_acceptance_length": 4.796296296296297,
+            "prefill_ms": 608.900358,
+            "snapshot_ms": 0.000963,
+            "tpot_ms": 45.86941484375,
+            "ttft_ms": 608.901413
+          },
+          "text": "We need answer arithmetic. Need compute total energy consumption kWh over 5 hours. Data center 4 racks *12 nodes =48 nodes. 75% peak, 25% idle. 48*0.75=36 peak nodes, 12 idle nodes. Peak power 850W, idle 250W. Total power =36*850 +12*250 =30600+3000=33600 W =33.6 kW. Over 5h energy=168 kWh. Need show arithmetic and end with exact number. Ensure final ends with exact number maybe \"168 kWh\". Could include exact number. Need be careful: total energy consumption in kWh over 5-hour period. Yes.\n\u241eTotal nodes:  \n4 racks \u00d7 12 nodes/rack = 48 nodes\n\nPeak-load nodes:  \n48 \u00d7 75% = 36 nodes\n\nIdle nodes:  \n48 \u00d7 25% = 12 nodes\n\nTotal power consumption:  \n(36 \u00d7 850 W) + (12 \u00d7 250 W)",
+          "repeat_identical": true,
+          "identical_to_reference": false,
+          "common_prefix_chars_with_reference": 494,
+          "reference_len_chars": 675
+        },
+        "llama-ar": {
+          "runs_decode_tok_s": [
+            10.882137382714202,
+            10.825815037511891
+          ],
+          "runs_ttft_s": [
+            0.5881067080190405,
+            0.20731779100606218
+          ],
+          "decode_tok_s_median": 10.853976210113046,
+          "decode_tok_s_mean": 10.853976210113046,
+          "decode_tok_s_stdev": 0.02816117260115547,
+          "ttft_s_median": 0.39771224951255135,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": {
+            "llama_timings": {
+              "cache_n": 42,
+              "prompt_n": 93,
+              "prompt_ms": 583.535,
+              "prompt_per_token_ms": 6.274569892473118,
+              "prompt_per_second": 159.37347374193493,
+              "predicted_n": 256,
+              "predicted_ms": 23433.185,
+              "predicted_per_token_ms": 91.89484313725491,
+              "predicted_per_second": 10.88200344938172
+            }
+          },
+          "text": "We need answer arithmetic. Need compute total energy consumption kWh over 5 hours. Data center 4 racks *12 nodes =48 nodes. 75% peak, 25% idle. 48*0.75=36 peak nodes, 12 idle nodes. Peak power 850W, idle 250W. Total power =36*850 +12*250 =30600+3000=33600 W =33.6 kW. Over 5h energy=168 kWh. Need show arithmetic and end with exact number. Ensure final ends with exact number maybe \"168 kWh\". Could include exact number. Need be careful: total energy consumption in kWh over 5-hour period. Yes.\u241eTotal nodes:  \n4 racks \u00d7 12 nodes/rack = 48 nodes\n\nPeak-load nodes:  \n48 \u00d7 75% = 36 nodes\n\nIdle nodes:  \n48 \u00d7 25% = 12 nodes\n\nTotal power consumption:  \n(36 \u00d7 850 W) + (12 \u00d7 250 W)",
+          "repeat_identical": true,
+          "identical_to_reference": true,
+          "common_prefix_chars_with_reference": 675,
+          "reference_len_chars": 675
+        },
+        "llama-mtp": {
+          "runs_decode_tok_s": [
+            22.651314849813087,
+            22.20912539159355
+          ],
+          "runs_ttft_s": [
+            0.5025824760086834,
+            0.22855497198179364
+          ],
+          "decode_tok_s_median": 22.430220120703318,
+          "decode_tok_s_mean": 22.430220120703318,
+          "decode_tok_s_stdev": 0.2210947291097689,
+          "ttft_s_median": 0.36556872399523854,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": {
+            "llama_timings": {
+              "cache_n": 42,
+              "prompt_n": 93,
+              "prompt_ms": 499.974,
+              "prompt_per_token_ms": 5.376064516129032,
+              "prompt_per_second": 186.00967250297015,
+              "predicted_n": 256,
+              "predicted_ms": 11257.798,
+              "predicted_per_token_ms": 44.14822745098039,
+              "predicted_per_second": 22.650966023728618,
+              "draft_n": 230,
+              "draft_n_accepted": 177
+            }
+          },
+          "text": "We need answer arithmetic. Need compute total energy consumption kWh over 5 hours. Data center 4 racks *12 nodes =48 nodes. 75% peak, 25% idle. 48*0.75=36 peak nodes, 12 idle nodes. Peak power 850W, idle 250W. Total power =36*850 +12*250 =30600+3000=33600 W =33.6 kW. Over 5h energy=168 kWh. Need show arithmetic and end with exact number. Ensure exact number maybe 168 kWh. Could also compute average per node: 0.75*850+0.25*250=637.5+62.5=700W; 48*700=33600W; *5=168000Wh=168kWh. End with exact number. Final concise.\u241eTotal nodes:\n\n\\[\n4 \\text{ racks} \\times 12 \\text{ nodes/rack",
+          "repeat_identical": true,
+          "identical_to_reference": false,
+          "common_prefix_chars_with_reference": 347,
+          "reference_len_chars": 675
+        },
+        "ollama": {
+          "runs_decode_tok_s": [
+            25.488278786894778,
+            25.185227513803465
+          ],
+          "runs_ttft_s": [
+            0.5740589250344783,
+            0.35120915999868885
+          ],
+          "decode_tok_s_median": 25.33675315034912,
+          "decode_tok_s_mean": 25.33675315034912,
+          "decode_tok_s_stdev": 0.15152563654565654,
+          "ttft_s_median": 0.4626340425165836,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": {
+            "llama_timings": {
+              "prompt_n": 93,
+              "prompt_ms": 484,
+              "prompt_per_token_ms": 5.204301075268817,
+              "prompt_per_second": 192.1487603305785,
+              "predicted_n": 256,
+              "predicted_ms": 10004,
+              "predicted_per_token_ms": 39.078125,
+              "predicted_per_second": 25.589764094362256
+            }
+          },
+          "text": "Let me work through this step by step.\n\nGiven:\n- 4 racks\n- 12 nodes per rack\n- Peak load: 850W per node\n- Idle: 250W per node\n- 75% of nodes at peak load\n- 25% of nodes idle\n- Time period: 5 hours\n\nStep 1: Total number of nodes\n4 racks \u00d7 12 nodes/rack = 48 nodes\n\nStep 2: Number of nodes at peak and idle\nPeak: 75% of 48 = 0.75 \u00d7 48 = 36 nodes\nIdle: 25% of 48 = 0.25 \u00d7 48 = 12 nodes\n\nStep 3: Power consumption\nPeak power: 36 \u00d7 850W = 30,600W\nIdle power: 12 \u00d7 250W = 3,000W\nTotal power: 30,600W + 3,000W = 33,600W\n\nStep 4: Energy over 5 hours\nEnergy =\u241e",
+          "repeat_identical": true,
+          "identical_to_reference": false,
+          "common_prefix_chars_with_reference": 0,
+          "reference_len_chars": 675
+        }
+      }
+    },
+    {
+      "name": "HumanEval-Code",
+      "engines": {
+        "sixi-dflash": {
+          "runs_decode_tok_s": [
+            21.278218627429368,
+            21.237304889602974
+          ],
+          "runs_ttft_s": [
+            0.6517438419978134,
+            0.6528635530266911
+          ],
+          "decode_tok_s_median": 21.25776175851617,
+          "decode_tok_s_mean": 21.25776175851617,
+          "decode_tok_s_stdev": 0.020456868913196757,
+          "ttft_s_median": 0.6523036975122523,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": {
+            "decode_tok_per_s": 20.96375817938828,
+            "mean_acceptance_length": 4.543859649122807,
+            "prefill_ms": 422.439234,
+            "snapshot_ms": 0.001361,
+            "tpot_ms": 47.70137069140625,
+            "ttft_ms": 422.440678
+          },
+          "text": "We need answer user: \"Write a clean, self-contained C++20 function `uint64_t prefix_xor_max(std::span<const uint64_t> arr)` that computes the maximum XOR of any prefix of `arr`. Include headers and a short complexity comment.\"\n\nNeed produce final code. Need think about semantics: maximum XOR of any prefix of arr. Prefix XOR usually cumulative XOR: prefix[0]=arr[0], prefix[i]=prefix[i-1]^arr[i]. Maximum among these prefix XOR values. Or could mean maximum XOR of any subarray? But phrase \"maximum XOR of any prefix\" likely maximum value of XOR of prefixes (from start to i). Need implement.\n\nC++20 std::span requires <span>, <cstdint>. Function:\n#include <cstdint>\n#include <span>\n#include <algorithm> maybe max.\n\nuint64_t prefix_xor_max(std::span<const uint64_t> arr) {\n    // O(n) time, O(1) space\n    uint64_t best = 0;\n    uint64_t x = 0;\n    for (uint64_t v : arr) {\n        x ^= v;\n        if (x\u241e",
+          "repeat_identical": true,
+          "identical_to_reference": false,
+          "common_prefix_chars_with_reference": 595,
+          "reference_len_chars": 1033
+        },
+        "llama-ar": {
+          "runs_decode_tok_s": [
+            10.8324451594862,
+            10.835566801243987
+          ],
+          "runs_ttft_s": [
+            0.3194409240386449,
+            0.25163437804440036
+          ],
+          "decode_tok_s_median": 10.834005980365093,
+          "decode_tok_s_mean": 10.834005980365093,
+          "decode_tok_s_stdev": 0.0015608208788933098,
+          "ttft_s_median": 0.2855376510415226,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": {
+            "llama_timings": {
+              "cache_n": 98,
+              "prompt_n": 4,
+              "prompt_ms": 219.086,
+              "prompt_per_token_ms": 54.7715,
+              "prompt_per_second": 18.257670503820417,
+              "predicted_n": 256,
+              "predicted_ms": 23540.132,
+              "predicted_per_token_ms": 92.3142431372549,
+              "predicted_per_second": 10.832564575253869
+            }
+          },
+          "text": "We need answer user: \"Write a clean, self-contained C++20 function `uint64_t prefix_xor_max(std::span<const uint64_t> arr)` that computes the maximum XOR of any prefix of `arr`. Include headers and a short complexity comment.\"\n\nNeed produce final code. Need think about semantics: maximum XOR of any prefix of arr. Prefix XOR usually cumulative XOR: prefix[0]=arr[0], prefix[i]=prefix[i-1]^arr[i]. Maximum among these prefix XOR values. Or could mean maximum XOR of any subarray? But phrase \"maximum XOR of any prefix\" likely maximum value of XOR of prefixes (from start to i). Need implement.\n\nFunction signature: uint64_t prefix_xor_max(std::span<const uint64_t> arr). Need include headers: <cstdint>, <span>, maybe <algorithm>? Not needed. Self-contained C++20. Need handle empty? Could return 0? Since no prefix. Need decide. Clean. If arr.empty() return 0. Complexity O(n), O(1).\n\nPotential ambiguity: \"maximum XOR of any prefix\" could mean for each prefix, compute XOR of all elements in that prefix, then max. Yes.\n\nNeed code\u241e",
+          "repeat_identical": true,
+          "identical_to_reference": true,
+          "common_prefix_chars_with_reference": 1033,
+          "reference_len_chars": 1033
+        },
+        "llama-mtp": {
+          "runs_decode_tok_s": [
+            19.679980524302554,
+            19.684872536454375
+          ],
+          "runs_ttft_s": [
+            0.521322701999452,
+            0.25078567198943347
+          ],
+          "decode_tok_s_median": 19.682426530378464,
+          "decode_tok_s_mean": 19.682426530378464,
+          "decode_tok_s_stdev": 0.0024460060759103897,
+          "ttft_s_median": 0.3860541869944427,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": {
+            "llama_timings": {
+              "cache_n": 42,
+              "prompt_n": 60,
+              "prompt_ms": 517.027,
+              "prompt_per_token_ms": 8.617116666666668,
+              "prompt_per_second": 116.0480980683794,
+              "predicted_n": 256,
+              "predicted_ms": 12956.901,
+              "predicted_per_token_ms": 50.811376470588236,
+              "predicted_per_second": 19.68063196593074,
+              "draft_n": 262,
+              "draft_n_accepted": 167
+            }
+          },
+          "text": "We need answer user: \"Write a clean, self-contained C++20 function `uint64_t prefix_xor_max(std::span<const uint64_t> arr)` that computes the maximum XOR of any prefix of `arr`. Include headers and a short complexity comment.\"\n\nNeed produce final code. Need think about semantics: maximum XOR of any prefix of arr. Prefix XOR usually cumulative XOR from start to i. \"maximum XOR of any prefix\" likely max over i of (arr[0] ^ ... ^ arr[i]). Could also mean maximum XOR value obtainable by XORing any prefix (contiguous starting at 0). Yes.\n\nNeed C++20 function using std::span<const uint64_t>. Include headers: <cstdint>, <span>, maybe <algorithm>? Not needed. Self-contained. Clean. Complexity O(n), O(1). Need handle empty? If arr empty, no prefix. What return? Could return 0. Need decide. Function should be robust. If empty, return 0. Or maybe precondition non-empty. User didn't specify. Clean self-contained: if empty return 0.\n\nImplementation:\n#include <cstdint>\n#include <span>\n\nuint64_t prefix_xor_max(std::span\u241e",
+          "repeat_identical": true,
+          "identical_to_reference": false,
+          "common_prefix_chars_with_reference": 348,
+          "reference_len_chars": 1033
+        },
+        "ollama": {
+          "runs_decode_tok_s": [
+            24.862686987314152,
+            24.99494260177186
+          ],
+          "runs_ttft_s": [
+            0.44797091296641156,
+            0.30897056800313294
+          ],
+          "decode_tok_s_median": 24.92881479454301,
+          "decode_tok_s_mean": 24.92881479454301,
+          "decode_tok_s_stdev": 0.06612780722885425,
+          "ttft_s_median": 0.37847074048477225,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": {
+            "llama_timings": {
+              "prompt_n": 60,
+              "prompt_ms": 441,
+              "prompt_per_token_ms": 7.35,
+              "prompt_per_second": 136.05442176870747,
+              "predicted_n": 256,
+              "predicted_ms": 10255,
+              "predicted_per_token_ms": 40.05859375,
+              "predicted_per_second": 24.963432471964897
+            }
+          },
+          "text": "The user wants a C++20 function that computes the maximum XOR of any prefix of an array.\n\nLet me think about what \"maximum XOR of any prefix\" means. Given an array `arr`, the prefixes are:\n- arr[0]\n- arr[0] ^ arr[1]\n- arr[0] ^ arr[1] ^ arr[2]\n- ...\n- arr[0] ^ arr[1] ^ ... ^ arr[n-1]\n\nSo we compute the running XOR (prefix XOR) and track the maximum value among all prefix XORs.\n\nThis is straightforward:\n1. Iterate through the array, maintaining a running XOR.\n2. Track the maximum of all running XOR values seen so far.\n\nComplexity: O(n) time, O(1) space.\n\nLet me write this cleanly:\n\n```cpp\n#include <cstdint>\n#include <span>\n#include <algorithm>\n\n// O(n) time, O(1) space.\nuint64_t prefix_xor_max(std::span<const uint64_t> arr) {\n    uint64_t best = 0;\n    uint64_t cur = 0;\n    for (uint\u241e",
+          "repeat_identical": true,
+          "identical_to_reference": false,
+          "common_prefix_chars_with_reference": 0,
+          "reference_len_chars": 1033
+        }
+      }
+    },
+    {
+      "name": "MT-Bench-JSON",
+      "engines": {
+        "sixi-dflash": {
+          "runs_decode_tok_s": [
+            26.307793535089818,
+            26.383623318501353
+          ],
+          "runs_ttft_s": [
+            0.6354769669706002,
+            0.6362042959663086
+          ],
+          "decode_tok_s_median": 26.345708426795586,
+          "decode_tok_s_mean": 26.345708426795586,
+          "decode_tok_s_stdev": 0.03791489170576767,
+          "ttft_s_median": 0.6358406314684544,
+          "completion_tokens": 243,
+          "finish_reason": "stop",
+          "metrics": {
+            "decode_tok_per_s": 25.794889305967978,
+            "mean_acceptance_length": 5.545454545454546,
+            "prefill_ms": 412.240643,
+            "snapshot_ms": 0.000463,
+            "tpot_ms": 38.767369308641975,
+            "ttft_ms": 412.241189
+          },
+          "text": "We need to respond to user: \"Output ONLY a valid JSON object describing a hypothetical inference engine with keys: \"engine\" (string), \"target_models\" (array of 2 strings), \"state_dtype\" (string), \"max_vram_gib\" (number), and \"speculative_decoders\" (array of strings).\"\n\nNeed output only valid JSON object. No extra. Ensure keys exactly. target_models array of 2 strings. speculative_decoders array of strings (could be empty? likely array of strings, maybe include one or more). state_dtype string e.g. \"bfloat16\". max_vram_gib number e.g. 80. engine string. Need valid JSON. Final only JSON.\n\u241e{\n  \"engine\": \"HypotheticalInferenceEngine\",\n  \"target_models\": [\n    \"llama-3-70b\",\n    \"mistral-large\"\n  ],\n  \"state_dtype\": \"bfloat16\",\n  \"max_vram_gib\": 80,\n  \"speculative_decoders\": [\n    \"draft-7b\"\n  ]\n}",
+          "repeat_identical": true,
+          "identical_to_reference": false,
+          "common_prefix_chars_with_reference": 592,
+          "reference_len_chars": 802
+        },
+        "llama-ar": {
+          "runs_decode_tok_s": [
+            10.825758541388906,
+            10.861573427042392
+          ],
+          "runs_ttft_s": [
+            0.2906569659826346,
+            0.22840397601248696
+          ],
+          "decode_tok_s_median": 10.843665984215649,
+          "decode_tok_s_mean": 10.843665984215649,
+          "decode_tok_s_stdev": 0.01790744282674339,
+          "ttft_s_median": 0.25953047099756077,
+          "completion_tokens": 244,
+          "finish_reason": "stop",
+          "metrics": {
+            "llama_timings": {
+              "cache_n": 108,
+              "prompt_n": 4,
+              "prompt_ms": 218.789,
+              "prompt_per_token_ms": 54.69725,
+              "prompt_per_second": 18.28245478520401,
+              "predicted_n": 244,
+              "predicted_ms": 22538.425,
+              "predicted_per_token_ms": 92.75072016460905,
+              "predicted_per_second": 10.781587444553024
+            }
+          },
+          "text": "We need to respond to user: \"Output ONLY a valid JSON object describing a hypothetical inference engine with keys: \"engine\" (string), \"target_models\" (array of 2 strings), \"state_dtype\" (string), \"max_vram_gib\" (number), and \"speculative_decoders\" (array of strings).\"\n\nNeed output only valid JSON object. No extra. Ensure keys exactly. target_models array of 2 strings. speculative_decoders array of strings (could be empty? likely array of strings, maybe include one or more). state_dtype string e.g. \"bfloat16\". max_vram_gib number e.g. 80. engine string. Need valid JSON. Final only JSON.\u241e{\n  \"engine\": \"HypotheticalInferenceEngine\",\n  \"target_models\": [\n    \"llama-3-70b\",\n    \"mistral-large\"\n  ],\n  \"state_dtype\": \"bfloat16\",\n  \"max_vram_gib\": 80,\n  \"speculative_decoders\": [\n    \"draft-7b\"\n  ]\n}",
+          "repeat_identical": true,
+          "identical_to_reference": true,
+          "common_prefix_chars_with_reference": 802,
+          "reference_len_chars": 802
+        },
+        "llama-mtp": {
+          "runs_decode_tok_s": [
+            22.67195529385678,
+            22.583152409285077
+          ],
+          "runs_ttft_s": [
+            0.5320050940499641,
+            0.28551333403447643
+          ],
+          "decode_tok_s_median": 22.62755385157093,
+          "decode_tok_s_mean": 22.62755385157093,
+          "decode_tok_s_stdev": 0.04440144228585119,
+          "ttft_s_median": 0.40875921404222026,
+          "completion_tokens": 244,
+          "finish_reason": "stop",
+          "metrics": {
+            "llama_timings": {
+              "cache_n": 42,
+              "prompt_n": 70,
+              "prompt_ms": 526.001,
+              "prompt_per_token_ms": 7.5142999999999995,
+              "prompt_per_second": 133.07959490571312,
+              "predicted_n": 244,
+              "predicted_ms": 10719.052,
+              "predicted_per_token_ms": 44.111325102880656,
+              "predicted_per_second": 22.66991521265127,
+              "draft_n": 219,
+              "draft_n_accepted": 170
+            }
+          },
+          "text": "We need to respond to user: \"Output ONLY a valid JSON object describing a hypothetical inference engine with keys: \"engine\" (string), \"target_models\" (array of 2 strings), \"state_dtype\" (string), \"max_vram_gib\" (number), and \"speculative_decoders\" (array of strings).\"\n\nNeed output only valid JSON object. No extra. Ensure keys exactly. target_models array of 2 strings. speculative_decoders array of strings (could be empty? likely array of strings, maybe include one or more). state_dtype string e.g. \"bfloat16\". max_vram_gib number e.g. 80. engine string. Need valid JSON. Final only JSON.\u241e{\n  \"engine\": \"HypotheticalInferenceEngine\",\n  \"target_models\": [\n    \"llama-3-70b\",\n    \"mistral-large\"\n  ],\n  \"state_dtype\": \"bfloat16\",\n  \"max_vram_gib\": 80,\n  \"speculative_decoders\": [\n    \"draft-7b\"\n  ]\n}",
+          "repeat_identical": true,
+          "identical_to_reference": true,
+          "common_prefix_chars_with_reference": 802,
+          "reference_len_chars": 802
+        },
+        "ollama": {
+          "runs_decode_tok_s": [
+            23.443967590663995,
+            22.95264816905466
+          ],
+          "runs_ttft_s": [
+            0.4733665059902705,
+            0.3060066149919294
+          ],
+          "decode_tok_s_median": 23.19830787985933,
+          "decode_tok_s_mean": 23.19830787985933,
+          "decode_tok_s_stdev": 0.24565971080466653,
+          "ttft_s_median": 0.38968656049109995,
+          "completion_tokens": 198,
+          "finish_reason": "stop",
+          "metrics": {
+            "llama_timings": {
+              "prompt_n": 70,
+              "prompt_ms": 465,
+              "prompt_per_token_ms": 6.642857142857143,
+              "prompt_per_second": 150.53763440860214,
+              "predicted_n": 198,
+              "predicted_ms": 8402,
+              "predicted_per_token_ms": 42.43434343434343,
+              "predicted_per_second": 23.56581766246132
+            }
+          },
+          "text": "The user wants me to output ONLY a valid JSON object with specific keys describing a hypothetical inference engine. Let me construct this carefully:\n\n- \"engine\" (string): a name for the hypothetical engine\n- \"target_models\" (array of 2 strings): two model names\n- \"state_dtype\" (string): a data type string\n- \"max_vram_gib\" (number): a number representing VRAM in GiB\n- \"speculative_decoders\" (array of strings): array of decoder names\n\nLet me make sure it's valid JSON and contains exactly these keys with the correct types.\u241e{\"engine\":\"NebulaInfer\",\"target_models\":[\"Llama-3-70B-Instruct\",\"Mistral-Large-2-123B\"],\"state_dtype\":\"bfloat16\",\"max_vram_gib\":96,\"speculative_decoders\":[\"EAGLE-2\",\"Medusa-4\"]}",
+          "repeat_identical": true,
+          "identical_to_reference": false,
+          "common_prefix_chars_with_reference": 0,
+          "reference_len_chars": 802
+        }
+      }
+    },
+    {
+      "name": "RAG-Code-Refactor",
+      "engines": {
+        "sixi-dflash": {
+          "runs_decode_tok_s": [
+            23.2763595280154,
+            23.25031266866646
+          ],
+          "runs_ttft_s": [
+            1.2254074289812706,
+            1.2009843229898252
+          ],
+          "decode_tok_s_median": 23.26333609834093,
+          "decode_tok_s_mean": 23.26333609834093,
+          "decode_tok_s_stdev": 0.013023429674470677,
+          "ttft_s_median": 1.213195875985548,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": {
+            "decode_tok_per_s": 22.882895400429017,
+            "mean_acceptance_length": 4.830188679245283,
+            "prefill_ms": 990.88817,
+            "snapshot_ms": 0.000759,
+            "tpot_ms": 43.70076349609375,
+            "ttft_ms": 990.889012
+          },
+          "text": "We need answer user's request: Refactor struct by adding noexcept to every method and changing float to double, keeping all names and comments identical. Need produce final code likely. Need ensure every method: record_request and reset_counters get noexcept. Change float to double: member types and parameter. Also literals? 0.0f to 0.0? Since changing float to double, likely use 0.0. Keep names and comments identical (there are no comments). Need maybe include uint64_t? unchanged. Need output only code? Could include brief. Ensure no extra changes. Let's craft final with code block.\n\u241e```cpp\nstruct TelemetryCounter {\n    uint64_t total_requests = 0;\n    uint64_t total_tokens = 0;\n    double min_latency_ms = 0.0;\n    double max_latency_ms = 0.0;\n    void record_request(uint64_t tokens, double latency_ms) noexcept {\n        total_requests += 1;\n        total_tokens += tokens;\n        if (latency_ms < min_latency_ms) min_latency_ms = latency_ms;\n        if (latency_ms > max_latency_ms) max_latency_ms = latency_ms",
+          "repeat_identical": true,
+          "identical_to_reference": false,
+          "common_prefix_chars_with_reference": 191,
+          "reference_len_chars": 1081
+        },
+        "llama-ar": {
+          "runs_decode_tok_s": [
+            10.818083265059213,
+            10.828021459161539
+          ],
+          "runs_ttft_s": [
+            0.2592131950077601,
+            0.23706133104860783
+          ],
+          "decode_tok_s_median": 10.823052362110376,
+          "decode_tok_s_mean": 10.823052362110376,
+          "decode_tok_s_stdev": 0.004969097051162663,
+          "ttft_s_median": 0.24813726302818395,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": {
+            "llama_timings": {
+              "cache_n": 262,
+              "prompt_n": 4,
+              "prompt_ms": 204.498,
+              "prompt_per_token_ms": 51.1245,
+              "prompt_per_second": 19.560093497246918,
+              "predicted_n": 256,
+              "predicted_ms": 23571.261,
+              "predicted_per_token_ms": 92.43631764705881,
+              "predicted_per_second": 10.818258726166581
+            }
+          },
+          "text": "We need answer user's request: Refactor struct by adding noexcept to every method and changing float to double, keeping all names and comments identical. Need produce final code likely. Need consider noexcept placement: C++ method noexcept specifier after parameter list before body or declaration. For member functions defined inline: void record_request(uint64_t tokens, double latency_ms) noexcept { ... } and void reset_counters() noexcept { ... }. Change float to double: fields min_latency_ms, max_latency_ms double; parameter double latency_ms; literals 0.0f to 0.0? User says changing float to double. Should change 0.0f to 0.0 maybe. Keep names and comments identical (no comments). Need maybe include uint64_t? no. Ensure all methods noexcept. Could also add noexcept to implicit? only methods. Need final concise.\u241e```cpp\nstruct TelemetryCounter {\n    uint64_t total_requests = 0;\n    uint64_t total_tokens = 0;\n    double min_latency_ms = 0.0;\n    double max_latency_ms = 0.0;\n    void record_request(uint64_t tokens, double latency_ms) noexcept {\n        total_requests",
+          "repeat_identical": true,
+          "identical_to_reference": true,
+          "common_prefix_chars_with_reference": 1081,
+          "reference_len_chars": 1081
+        },
+        "llama-mtp": {
+          "runs_decode_tok_s": [
+            17.3384253526892,
+            17.414510112203956
+          ],
+          "runs_ttft_s": [
+            0.9161696229712106,
+            0.22320297599071637
+          ],
+          "decode_tok_s_median": 17.376467732446578,
+          "decode_tok_s_mean": 17.376467732446578,
+          "decode_tok_s_stdev": 0.03804237975737834,
+          "ttft_s_median": 0.5696862994809635,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": {
+            "llama_timings": {
+              "cache_n": 42,
+              "prompt_n": 224,
+              "prompt_ms": 908.315,
+              "prompt_per_token_ms": 4.054977678571428,
+              "prompt_per_second": 246.61048204642663,
+              "predicted_n": 256,
+              "predicted_ms": 14708.073,
+              "predicted_per_token_ms": 57.678717647058825,
+              "predicted_per_second": 17.337417348962028,
+              "draft_n": 296,
+              "draft_n_accepted": 156
+            }
+          },
+          "text": "We need answer user's request: Refactor struct by adding noexcept to every method and changing float to double, keeping all names and comments identical. Need produce code likely. Need ensure final only answer. Need consider C++ noexcept placement: method declarations/definitions. For member functions defined inline, can add noexcept after parameter list before body: void record_request(uint64_t tokens, double latency_ms) noexcept { ... }. reset_counters() noexcept { ... }. Change float to double: fields min_latency_ms, max_latency_ms type double; parameter double latency_ms; literals 0.0f to 0.0? User says changing float to double. Should change 0.0f to 0.0 maybe. Keep names and comments identical (no comments). Need maybe include uint64_t? no. Need ensure no other changes. Could output code block.\n\nDouble-check: \"adding ` noexcept` to every method\" There are two methods. Could also add noexcept to struct? no. Need maybe if methods are non-const? no.\n\nPotential issue: noexcept on methods that assign? fine.\n\nNeed final concise.\u241e```cpp\nstruct TelemetryCounter {\n    uint64_t total_requests = 0;\n    uint",
+          "repeat_identical": true,
+          "identical_to_reference": false,
+          "common_prefix_chars_with_reference": 167,
+          "reference_len_chars": 1081
+        },
+        "ollama": {
+          "runs_decode_tok_s": [
+            25.201447603400016,
+            24.76655240488867
+          ],
+          "runs_ttft_s": [
+            0.9325002250261605,
+            0.3325508529669605
+          ],
+          "decode_tok_s_median": 24.98400000414434,
+          "decode_tok_s_mean": 24.98400000414434,
+          "decode_tok_s_stdev": 0.21744759925567259,
+          "ttft_s_median": 0.6325255389965605,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": {
+            "llama_timings": {
+              "prompt_n": 224,
+              "prompt_ms": 924,
+              "prompt_per_token_ms": 4.125,
+              "prompt_per_second": 242.42424242424244,
+              "predicted_n": 256,
+              "predicted_ms": 10118,
+              "predicted_per_token_ms": 39.5234375,
+              "predicted_per_second": 25.30144297291955
+            }
+          },
+          "text": "The user wants me to refactor a C++ struct with two specific changes:\n1. Add `noexcept` to every method\n2. Change `float` to `double`\n\nI need to keep all names and comments identical. Let me go through the struct:\n\n- `float min_latency_ms = 0.0f;` \u2192 `double min_latency_ms = 0.0;`\n- `float max_latency_ms = 0.0f;` \u2192 `double max_latency_ms = 0.0;`\n- `void record_request(uint64_t tokens, float latency_ms)` \u2192 `void record_request(uint64_t tokens, double latency_ms) noexcept`\n- `void reset_counters()` \u2192 `void reset_counters() noexcept`\n\nFor the float literals: `0.0f` should become `0.0` (since we're using double now, the `f` suffix is no longer needed, and `0.0` is a double literal by default).\n\nLet me also check: the `0.0f` in `reset_counters()` should become `0.0`.\n\nNo comments exist in the original, so I just need to keep names identical.\n\nLet me write the\u241e",
+          "repeat_identical": true,
+          "identical_to_reference": false,
+          "common_prefix_chars_with_reference": 0,
+          "reference_len_chars": 1081
+        }
+      }
+    },
+    {
+      "name": "Arch-Systems-TG",
+      "engines": {
+        "sixi-dflash": {
+          "runs_decode_tok_s": [
+            16.021399279659185,
+            15.969864199391743
+          ],
+          "runs_ttft_s": [
+            0.6189765150193125,
+            0.6208033110015094
+          ],
+          "decode_tok_s_median": 15.995631739525464,
+          "decode_tok_s_mean": 15.995631739525464,
+          "decode_tok_s_stdev": 0.025767540133720956,
+          "ttft_s_median": 0.619889913010411,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": {
+            "decode_tok_per_s": 15.860875244341694,
+            "mean_acceptance_length": 3.4266666666666667,
+            "prefill_ms": 392.187162,
+            "snapshot_ms": 0.00124,
+            "tpot_ms": 63.0482230390625,
+            "ttft_ms": 392.188486
+          },
+          "text": "We need answer user: \"Explain in 4 concise bullet points why hybrid Gated DeltaNet (linear recurrent state) + full-attention models need O(1) state checkpointing during speculative decoding compared to standard Transformer KV caches.\"\n\nNeed produce 4 concise bullets. Need understand technical context. Hybrid Gated DeltaNet + full attention models. Gated DeltaNet is linear attention/recurrent state? It has recurrent state (matrix) updated per token, maybe O(d^2) state independent of sequence length. Full attention layers have KV cache growing O(L). Speculative decoding: draft model proposes tokens, target verifies; if rejected, need rollback state to checkpoint. Standard Transformer KV caches: to rollback, need store KV cache at checkpoint, size O(L) (or O(seq_len) per layer) because KV cache is append-only and depends on all previous tokens. Hybrid with linear recurrent state: recurrent state is fixed-size O(1) w.r.t sequence length (though O(d^2) per layer), so checkpointing recurrent state is O(1) per layer. But full-attention layers still need KV cache? The question says \"hybrid Gated DeltaNet (linear recurrent state) + full-attention models need O(1) state\u241e",
+          "repeat_identical": true,
+          "identical_to_reference": true,
+          "common_prefix_chars_with_reference": 1179,
+          "reference_len_chars": 1179
+        },
+        "llama-ar": {
+          "runs_decode_tok_s": [
+            10.90165673007378,
+            10.943455509212212
+          ],
+          "runs_ttft_s": [
+            0.27958008099813014,
+            0.2483557189698331
+          ],
+          "decode_tok_s_median": 10.922556119642996,
+          "decode_tok_s_mean": 10.922556119642996,
+          "decode_tok_s_stdev": 0.020899389569215998,
+          "ttft_s_median": 0.2639678999839816,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": {
+            "llama_timings": {
+              "cache_n": 90,
+              "prompt_n": 4,
+              "prompt_ms": 197.135,
+              "prompt_per_token_ms": 49.28375,
+              "prompt_per_second": 20.290663758338194,
+              "predicted_n": 256,
+              "predicted_ms": 23390.624,
+              "predicted_per_token_ms": 91.72793725490196,
+              "predicted_per_second": 10.901804073290222
+            }
+          },
+          "text": "We need answer user: \"Explain in 4 concise bullet points why hybrid Gated DeltaNet (linear recurrent state) + full-attention models need O(1) state checkpointing during speculative decoding compared to standard Transformer KV caches.\"\n\nNeed produce 4 concise bullets. Need understand technical context. Hybrid Gated DeltaNet + full attention models. Gated DeltaNet is linear attention/recurrent state? It has recurrent state (matrix) updated per token, maybe O(d^2) state independent of sequence length. Full attention layers have KV cache growing O(L). Speculative decoding: draft model proposes tokens, target verifies; if rejected, need rollback state to checkpoint. Standard Transformer KV caches: to rollback, need store KV cache at checkpoint, size O(L) (or O(seq_len) per layer) because KV cache is append-only and depends on all previous tokens. Hybrid with linear recurrent state: recurrent state is fixed-size O(1) w.r.t sequence length (though O(d^2) per layer), so checkpointing recurrent state is O(1) per layer. But full-attention layers still need KV cache? The question says \"hybrid Gated DeltaNet (linear recurrent state) + full-attention models need O(1) state\u241e",
+          "repeat_identical": true,
+          "identical_to_reference": true,
+          "common_prefix_chars_with_reference": 1179,
+          "reference_len_chars": 1179
+        },
+        "llama-mtp": {
+          "runs_decode_tok_s": [
+            17.127680262214106,
+            17.21367267628777
+          ],
+          "runs_ttft_s": [
+            0.5233534789877012,
+            0.27639767399523407
+          ],
+          "decode_tok_s_median": 17.17067646925094,
+          "decode_tok_s_mean": 17.17067646925094,
+          "decode_tok_s_stdev": 0.0429962070368326,
+          "ttft_s_median": 0.39987557649146765,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": {
+            "llama_timings": {
+              "cache_n": 42,
+              "prompt_n": 52,
+              "prompt_ms": 445.219,
+              "prompt_per_token_ms": 8.561903846153847,
+              "prompt_per_second": 116.79645298156638,
+              "predicted_n": 256,
+              "predicted_ms": 14887.822,
+              "predicted_per_token_ms": 58.38361568627451,
+              "predicted_per_second": 17.128093014545716,
+              "draft_n": 301,
+              "draft_n_accepted": 154
+            }
+          },
+          "text": "We need answer user: \"Explain in 4 concise bullet points why hybrid Gated DeltaNet (linear recurrent state) + full-attention models need O(1) state checkpointing during speculative decoding compared to standard Transformer KV caches.\"\n\nNeed produce 4 concise bullets. Need understand technical context. Hybrid Gated DeltaNet + full attention models. Gated DeltaNet is linear attention/recurrent state? It has recurrent state (matrix) updated per token, maybe O(d^2) state independent of sequence length. Full attention layers have KV cache growing O(L). Speculative decoding: draft model proposes tokens, target verifies; if rejected, need rollback state to checkpoint. Standard Transformer KV caches: to rollback, need store KV cache at checkpoint, size O(L) (or O(seq_len) per layer) because KV cache is append-only and depends on all previous tokens. Hybrid with linear recurrent state: recurrent state is fixed-size O(1) w.r.t sequence length (though O(d^2) per layer), so checkpointing recurrent state is O(1) per layer. But full-attention layers still need KV cache? The question says \"hybrid Gated DeltaNet (linear recurrent state) + full-attention models need O(1) state\u241e",
+          "repeat_identical": true,
+          "identical_to_reference": true,
+          "common_prefix_chars_with_reference": 1179,
+          "reference_len_chars": 1179
+        },
+        "ollama": {
+          "runs_decode_tok_s": [
+            19.11450222223275,
+            18.617704753038968
+          ],
+          "runs_ttft_s": [
+            0.4247991970041767,
+            0.3262687760288827
+          ],
+          "decode_tok_s_median": 18.86610348763586,
+          "decode_tok_s_mean": 18.86610348763586,
+          "decode_tok_s_stdev": 0.24839873459689166,
+          "ttft_s_median": 0.3755339865165297,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": {
+            "llama_timings": {
+              "prompt_n": 52,
+              "prompt_ms": 418,
+              "prompt_per_token_ms": 8.038461538461538,
+              "prompt_per_second": 124.40191387559808,
+              "predicted_n": 256,
+              "predicted_ms": 13339,
+              "predicted_per_token_ms": 52.10546875,
+              "predicted_per_second": 19.191843466526727
+            }
+          },
+          "text": "The user is asking about why hybrid models combining Gated DeltaNet (a linear recurrent state architecture) with full-attention layers need O(1) state checkpointing during speculative decoding, compared to standard Transformer KV caches.\n\nLet me think carefully about this.\n\n**Gated DeltaNet / Linear Recurrent State:**\n- Linear attention / linear RNN models maintain a fixed-size recurrent state (e.g., a matrix S of size d_k \u00d7 d_v) that is updated at each step via a recurrence: S_t = S_{t-1} + k_t v_t^T (or with gating/delta rules).\n- The state is O(1) in sequence length \u2014 it's a fixed-size matrix regardless of how many tokens have been processed.\n- This is the key advantage: no growing KV cache.\n\n**Standard Transformer KV Cache:**\n- At each layer, you store K and V vectors for every token in the sequence.\n- The KV cache grows O(n) with sequence length n.\n- During speculative decoding, you verify a block of tokens (e.g., 4-8 tokens) in parallel.\n\n**Speculative Decoding Context:**\n- In speculative decoding, a draft model proposes k tokens, then\u241e",
+          "repeat_identical": true,
+          "identical_to_reference": false,
+          "common_prefix_chars_with_reference": 0,
+          "reference_len_chars": 1179
+        }
+      }
+    }
+  ]
+}

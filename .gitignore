@@ -1,0 +1,16 @@
+# Build directories
+build/
+build-san/
+cmake-build-*/
+
+# Logs, temporary and lock files
+*.log
+*.lock
+*.tmp
+*.ckpt
+*.swp
+*~
+
+# Local data and caches
+scripts/data/
+__pycache__/

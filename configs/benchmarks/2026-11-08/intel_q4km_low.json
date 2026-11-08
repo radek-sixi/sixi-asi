@@ -1,0 +1,1107 @@
+{
+  "config": {
+    "engines": "sixi=http://127.0.0.1:8089,llama-ar=http://127.0.0.1:8099",
+    "tasks": "gsm8k,humaneval,tools,needle",
+    "n_gsm": 30,
+    "n_he": 20,
+    "seed": 1234,
+    "max_tokens": 1024,
+    "temperature": 0.0,
+    "effort": "low",
+    "out": "intel_q4km_low.json"
+  },
+  "engines": {
+    "sixi": {
+      "tasks": {
+        "gsm8k": {
+          "n": 30,
+          "correct": 28,
+          "accuracy": 0.9333333333333333,
+          "mean_reasoning_tokens": 185.86666666666667,
+          "mean_completion_tokens": 332.8333333333333,
+          "mean_wall_s": 18.141912047304988,
+          "tok_s": 18.346100039812303,
+          "details": [
+            {
+              "i": 0,
+              "ok": true,
+              "pred": "480",
+              "gold": "480",
+              "finish": "stop",
+              "reasoning_tokens": 254,
+              "completion_tokens": 374,
+              "wall_s": 22.1
+            },
+            {
+              "i": 1,
+              "ok": true,
+              "pred": "29",
+              "gold": "29",
+              "finish": "stop",
+              "reasoning_tokens": 133,
+              "completion_tokens": 282,
+              "wall_s": 15.75
+            },
+            {
+              "i": 2,
+              "ok": true,
+              "pred": "50",
+              "gold": "50",
+              "finish": "stop",
+              "reasoning_tokens": 117,
+              "completion_tokens": 209,
+              "wall_s": 11.69
+            },
+            {
+              "i": 3,
+              "ok": true,
+              "pred": "2100",
+              "gold": "2100",
+              "finish": "stop",
+              "reasoning_tokens": 151,
+              "completion_tokens": 312,
+              "wall_s": 17.89
+            },
+            {
+              "i": 4,
+              "ok": true,
+              "pred": "43500",
+              "gold": "43500",
+              "finish": "stop",
+              "reasoning_tokens": 736,
+              "completion_tokens": 963,
+              "wall_s": 54.48
+            },
+            {
+              "i": 5,
+              "ok": true,
+              "pred": "31",
+              "gold": "31",
+              "finish": "stop",
+              "reasoning_tokens": 193,
+              "completion_tokens": 353,
+              "wall_s": 19.95
+            },
+            {
+              "i": 6,
+              "ok": true,
+              "pred": "240",
+              "gold": "240",
+              "finish": "stop",
+              "reasoning_tokens": 99,
+              "completion_tokens": 192,
+              "wall_s": 11.05
+            },
+            {
+              "i": 7,
+              "ok": true,
+              "pred": "5",
+              "gold": "5",
+              "finish": "stop",
+              "reasoning_tokens": 118,
+              "completion_tokens": 228,
+              "wall_s": 13.52
+            },
+            {
+              "i": 8,
+              "ok": true,
+              "pred": "20",
+              "gold": "20",
+              "finish": "stop",
+              "reasoning_tokens": 189,
+              "completion_tokens": 405,
+              "wall_s": 22.67
+            },
+            {
+              "i": 9,
+              "ok": true,
+              "pred": "130000",
+              "gold": "130000",
+              "finish": "stop",
+              "reasoning_tokens": 140,
+              "completion_tokens": 302,
+              "wall_s": 17.18
+            },
+            {
+              "i": 10,
+              "ok": true,
+              "pred": "80",
+              "gold": "80",
+              "finish": "stop",
+              "reasoning_tokens": 96,
+              "completion_tokens": 197,
+              "wall_s": 10.96
+            },
+            {
+              "i": 11,
+              "ok": true,
+              "pred": "8",
+              "gold": "8",
+              "finish": "stop",
+              "reasoning_tokens": 95,
+              "completion_tokens": 186,
+              "wall_s": 10.7
+            },
+            {
+              "i": 12,
+              "ok": true,
+              "pred": "48",
+              "gold": "48",
+              "finish": "stop",
+              "reasoning_tokens": 180,
+              "completion_tokens": 358,
+              "wall_s": 18.55
+            },
+            {
+              "i": 13,
+              "ok": true,
+              "pred": "296",
+              "gold": "296",
+              "finish": "stop",
+              "reasoning_tokens": 134,
+              "completion_tokens": 248,
+              "wall_s": 13.1
+            },
+            {
+              "i": 14,
+              "ok": true,
+              "pred": "15",
+              "gold": "15",
+              "finish": "stop",
+              "reasoning_tokens": 106,
+              "completion_tokens": 246,
+              "wall_s": 13.64
+            },
+            {
+              "i": 15,
+              "ok": true,
+              "pred": "800",
+              "gold": "800",
+              "finish": "stop",
+              "reasoning_tokens": 182,
+              "completion_tokens": 417,
+              "wall_s": 21.51
+            },
+            {
+              "i": 16,
+              "ok": false,
+              "pred": "44",
+              "gold": "104",
+              "finish": "stop",
+              "reasoning_tokens": 693,
+              "completion_tokens": 883,
+              "wall_s": 49.72
+            },
+            {
+              "i": 17,
+              "ok": true,
+              "pred": "1",
+              "gold": "1",
+              "finish": "stop",
+              "reasoning_tokens": 131,
+              "completion_tokens": 269,
+              "wall_s": 13.67
+            },
+            {
+              "i": 18,
+              "ok": true,
+              "pred": "2",
+              "gold": "2",
+              "finish": "stop",
+              "reasoning_tokens": 134,
+              "completion_tokens": 261,
+              "wall_s": 14.03
+            },
+            {
+              "i": 19,
+              "ok": true,
+              "pred": "11",
+              "gold": "11",
+              "finish": "stop",
+              "reasoning_tokens": 103,
+              "completion_tokens": 244,
+              "wall_s": 13.22
+            },
+            {
+              "i": 20,
+              "ok": true,
+              "pred": "54",
+              "gold": "54",
+              "finish": "stop",
+              "reasoning_tokens": 186,
+              "completion_tokens": 372,
+              "wall_s": 19.23
+            },
+            {
+              "i": 21,
+              "ok": true,
+              "pred": "5",
+              "gold": "5",
+              "finish": "stop",
+              "reasoning_tokens": 236,
+              "completion_tokens": 451,
+              "wall_s": 23.02
+            },
+            {
+              "i": 22,
+              "ok": true,
+              "pred": "27",
+              "gold": "27",
+              "finish": "stop",
+              "reasoning_tokens": 78,
+              "completion_tokens": 158,
+              "wall_s": 8.34
+            },
+            {
+              "i": 23,
+              "ok": true,
+              "pred": "96",
+              "gold": "96",
+              "finish": "stop",
+              "reasoning_tokens": 174,
+              "completion_tokens": 303,
+              "wall_s": 15.54
+            },
+            {
+              "i": 24,
+              "ok": true,
+              "pred": "90",
+              "gold": "90",
+              "finish": "stop",
+              "reasoning_tokens": 89,
+              "completion_tokens": 166,
+              "wall_s": 8.66
+            },
+            {
+              "i": 25,
+              "ok": false,
+              "pred": "1800",
+              "gold": "360",
+              "finish": "stop",
+              "reasoning_tokens": 192,
+              "completion_tokens": 383,
+              "wall_s": 20.15
+            },
+            {
+              "i": 26,
+              "ok": true,
+              "pred": "30",
+              "gold": "30",
+              "finish": "stop",
+              "reasoning_tokens": 190,
+              "completion_tokens": 389,
+              "wall_s": 20.68
+            },
+            {
+              "i": 27,
+              "ok": true,
+              "pred": "15",
+              "gold": "15",
+              "finish": "stop",
+              "reasoning_tokens": 108,
+              "completion_tokens": 218,
+              "wall_s": 11.51
+            },
+            {
+              "i": 28,
+              "ok": true,
+              "pred": "3",
+              "gold": "3",
+              "finish": "stop",
+              "reasoning_tokens": 249,
+              "completion_tokens": 458,
+              "wall_s": 22.96
+            },
+            {
+              "i": 29,
+              "ok": true,
+              "pred": "6",
+              "gold": "6",
+              "finish": "stop",
+              "reasoning_tokens": 90,
+              "completion_tokens": 158,
+              "wall_s": 8.8
+            }
+          ]
+        },
+        "humaneval": {
+          "n": 20,
+          "passed": 16,
+          "pass_at_1": 0.8,
+          "mean_reasoning_tokens": 435.05,
+          "mean_completion_tokens": 639.3,
+          "mean_wall_s": 40.85386899499281,
+          "tok_s": 15.648456700107273,
+          "details": [
+            {
+              "i": 0,
+              "task_id": "HumanEval/82",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 247,
+              "completion_tokens": 386,
+              "wall_s": 19.0
+            },
+            {
+              "i": 1,
+              "task_id": "HumanEval/115",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 520,
+              "completion_tokens": 895,
+              "wall_s": 43.45
+            },
+            {
+              "i": 2,
+              "task_id": "HumanEval/92",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 444,
+              "completion_tokens": 631,
+              "wall_s": 30.86
+            },
+            {
+              "i": 3,
+              "task_id": "HumanEval/161",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 194,
+              "completion_tokens": 357,
+              "wall_s": 17.35
+            },
+            {
+              "i": 4,
+              "task_id": "HumanEval/47",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 666,
+              "completion_tokens": 816,
+              "wall_s": 41.68
+            },
+            {
+              "i": 5,
+              "task_id": "HumanEval/51",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 173,
+              "completion_tokens": 338,
+              "wall_s": 17.63
+            },
+            {
+              "i": 6,
+              "task_id": "HumanEval/50",
+              "ok": false,
+              "err": "ost recent call last):\n  File \"/tmp/tmpdx6jp1k_/prog.py\", line 28, in <module>\n    check(decode_shift)\n  File \"/tmp/tmpdx6jp1k_/prog.py\", line 23, in check\n    encoded_str = encode_shift(str)\n                  ^^^^^^^^^^^^\nNameError: name 'encode_shift' is not defined. Did you mean: 'decode_shift'?\n",
+              "finish": "stop",
+              "reasoning_tokens": 146,
+              "completion_tokens": 215,
+              "wall_s": 11.99
+            },
+            {
+              "i": 7,
+              "task_id": "HumanEval/146",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 625,
+              "completion_tokens": 833,
+              "wall_s": 59.92
+            },
+            {
+              "i": 8,
+              "task_id": "HumanEval/36",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 747,
+              "completion_tokens": 889,
+              "wall_s": 94.34
+            },
+            {
+              "i": 9,
+              "task_id": "HumanEval/109",
+              "ok": false,
+              "err": "  File \"/tmp/tmp08awd6iw/prog.py\", line 5\n    \"\"\"We have an array 'arr' of N integers arr[1], arr[2], ..., arr[N].The\n    ^\nSyntaxError: unterminated triple-quoted string literal (detected at line 26)\n",
+              "finish": "length",
+              "reasoning_tokens": 887,
+              "completion_tokens": 1024,
+              "wall_s": 82.55
+            },
+            {
+              "i": 10,
+              "task_id": "HumanEval/81",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 394,
+              "completion_tokens": 924,
+              "wall_s": 56.14
+            },
+            {
+              "i": 11,
+              "task_id": "HumanEval/30",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 68,
+              "completion_tokens": 207,
+              "wall_s": 21.63
+            },
+            {
+              "i": 12,
+              "task_id": "HumanEval/61",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 244,
+              "completion_tokens": 400,
+              "wall_s": 25.57
+            },
+            {
+              "i": 13,
+              "task_id": "HumanEval/105",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 442,
+              "completion_tokens": 836,
+              "wall_s": 41.62
+            },
+            {
+              "i": 14,
+              "task_id": "HumanEval/144",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 482,
+              "completion_tokens": 700,
+              "wall_s": 35.93
+            },
+            {
+              "i": 15,
+              "task_id": "HumanEval/95",
+              "ok": false,
+              "err": "  File \"/tmp/tmphvztrp8w/prog.py\", line 5\n    \"\"\"\n    ^\nSyntaxError: unterminated triple-quoted string literal (detected at line 32)\n",
+              "finish": "length",
+              "reasoning_tokens": 847,
+              "completion_tokens": 1024,
+              "wall_s": 58.82
+            },
+            {
+              "i": 16,
+              "task_id": "HumanEval/45",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 103,
+              "completion_tokens": 161,
+              "wall_s": 8.76
+            },
+            {
+              "i": 17,
+              "task_id": "HumanEval/87",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 492,
+              "completion_tokens": 831,
+              "wall_s": 74.08
+            },
+            {
+              "i": 18,
+              "task_id": "HumanEval/132",
+              "ok": false,
+              "err": "Traceback (most recent call last):\n  File \"/tmp/tmpal8ufayp/prog.py\", line 49, in <module>\n    check(is_nested)\n  File \"/tmp/tmpal8ufayp/prog.py\", line 37, in check\n    assert candidate('[[]') == False\n           ^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError\n",
+              "finish": "stop",
+              "reasoning_tokens": 497,
+              "completion_tokens": 695,
+              "wall_s": 41.81
+            },
+            {
+              "i": 19,
+              "task_id": "HumanEval/158",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 483,
+              "completion_tokens": 624,
+              "wall_s": 33.93
+            }
+          ]
+        },
+        "tools": {
+          "passed": true,
+          "turns": 3,
+          "final": "93.50 EUR",
+          "calls": [
+            "lookup_price",
+            "lookup_price",
+            "calculator"
+          ],
+          "used_lookup": true,
+          "used_calc": true,
+          "answer_ok": true
+        },
+        "needle": {
+          "passed": true,
+          "content": "ORCHID-7431-TANGO",
+          "doc_chars": 41210,
+          "completion_tokens": 83,
+          "wall_s": 28.07
+        }
+      }
+    },
+    "llama-ar": {
+      "tasks": {
+        "gsm8k": {
+          "n": 30,
+          "correct": 27,
+          "accuracy": 0.9,
+          "mean_reasoning_tokens": 122.06666666666666,
+          "mean_completion_tokens": 335.4,
+          "mean_wall_s": 33.5241363750014,
+          "tok_s": 10.004732001093526,
+          "details": [
+            {
+              "i": 0,
+              "ok": true,
+              "pred": "480",
+              "gold": "480",
+              "finish": "stop",
+              "reasoning_tokens": 113,
+              "completion_tokens": 246,
+              "wall_s": 28.18
+            },
+            {
+              "i": 1,
+              "ok": true,
+              "pred": "29",
+              "gold": "29",
+              "finish": "stop",
+              "reasoning_tokens": 92,
+              "completion_tokens": 283,
+              "wall_s": 43.98
+            },
+            {
+              "i": 2,
+              "ok": true,
+              "pred": "50",
+              "gold": "50",
+              "finish": "stop",
+              "reasoning_tokens": 65,
+              "completion_tokens": 208,
+              "wall_s": 21.32
+            },
+            {
+              "i": 3,
+              "ok": true,
+              "pred": "2100",
+              "gold": "2100",
+              "finish": "stop",
+              "reasoning_tokens": 100,
+              "completion_tokens": 313,
+              "wall_s": 35.53
+            },
+            {
+              "i": 4,
+              "ok": false,
+              "pred": "435",
+              "gold": "43500",
+              "finish": "length",
+              "reasoning_tokens": 604,
+              "completion_tokens": 1024,
+              "wall_s": 112.02
+            },
+            {
+              "i": 5,
+              "ok": true,
+              "pred": "31",
+              "gold": "31",
+              "finish": "stop",
+              "reasoning_tokens": 151,
+              "completion_tokens": 354,
+              "wall_s": 35.86
+            },
+            {
+              "i": 6,
+              "ok": true,
+              "pred": "240",
+              "gold": "240",
+              "finish": "stop",
+              "reasoning_tokens": 81,
+              "completion_tokens": 193,
+              "wall_s": 19.41
+            },
+            {
+              "i": 7,
+              "ok": true,
+              "pred": "5",
+              "gold": "5",
+              "finish": "stop",
+              "reasoning_tokens": 74,
+              "completion_tokens": 229,
+              "wall_s": 23.65
+            },
+            {
+              "i": 8,
+              "ok": true,
+              "pred": "20",
+              "gold": "20",
+              "finish": "stop",
+              "reasoning_tokens": 113,
+              "completion_tokens": 396,
+              "wall_s": 38.22
+            },
+            {
+              "i": 9,
+              "ok": true,
+              "pred": "130000",
+              "gold": "130000",
+              "finish": "stop",
+              "reasoning_tokens": 102,
+              "completion_tokens": 303,
+              "wall_s": 29.18
+            },
+            {
+              "i": 10,
+              "ok": true,
+              "pred": "80",
+              "gold": "80",
+              "finish": "stop",
+              "reasoning_tokens": 62,
+              "completion_tokens": 198,
+              "wall_s": 18.86
+            },
+            {
+              "i": 11,
+              "ok": true,
+              "pred": "8",
+              "gold": "8",
+              "finish": "stop",
+              "reasoning_tokens": 67,
+              "completion_tokens": 180,
+              "wall_s": 17.29
+            },
+            {
+              "i": 12,
+              "ok": true,
+              "pred": "48",
+              "gold": "48",
+              "finish": "stop",
+              "reasoning_tokens": 135,
+              "completion_tokens": 413,
+              "wall_s": 39.34
+            },
+            {
+              "i": 13,
+              "ok": true,
+              "pred": "296",
+              "gold": "296",
+              "finish": "stop",
+              "reasoning_tokens": 116,
+              "completion_tokens": 328,
+              "wall_s": 30.92
+            },
+            {
+              "i": 14,
+              "ok": true,
+              "pred": "15",
+              "gold": "15",
+              "finish": "stop",
+              "reasoning_tokens": 55,
+              "completion_tokens": 247,
+              "wall_s": 23.8
+            },
+            {
+              "i": 15,
+              "ok": true,
+              "pred": "800",
+              "gold": "800",
+              "finish": "stop",
+              "reasoning_tokens": 113,
+              "completion_tokens": 418,
+              "wall_s": 39.68
+            },
+            {
+              "i": 16,
+              "ok": false,
+              "pred": "44",
+              "gold": "104",
+              "finish": "stop",
+              "reasoning_tokens": 486,
+              "completion_tokens": 884,
+              "wall_s": 83.46
+            },
+            {
+              "i": 17,
+              "ok": true,
+              "pred": "1",
+              "gold": "1",
+              "finish": "stop",
+              "reasoning_tokens": 105,
+              "completion_tokens": 283,
+              "wall_s": 27.28
+            },
+            {
+              "i": 18,
+              "ok": true,
+              "pred": "2",
+              "gold": "2",
+              "finish": "stop",
+              "reasoning_tokens": 86,
+              "completion_tokens": 262,
+              "wall_s": 24.93
+            },
+            {
+              "i": 19,
+              "ok": true,
+              "pred": "11",
+              "gold": "11",
+              "finish": "stop",
+              "reasoning_tokens": 61,
+              "completion_tokens": 245,
+              "wall_s": 23.36
+            },
+            {
+              "i": 20,
+              "ok": true,
+              "pred": "54",
+              "gold": "54",
+              "finish": "stop",
+              "reasoning_tokens": 100,
+              "completion_tokens": 366,
+              "wall_s": 34.55
+            },
+            {
+              "i": 21,
+              "ok": true,
+              "pred": "5",
+              "gold": "5",
+              "finish": "stop",
+              "reasoning_tokens": 115,
+              "completion_tokens": 452,
+              "wall_s": 42.45
+            },
+            {
+              "i": 22,
+              "ok": true,
+              "pred": "27",
+              "gold": "27",
+              "finish": "stop",
+              "reasoning_tokens": 58,
+              "completion_tokens": 159,
+              "wall_s": 15.21
+            },
+            {
+              "i": 23,
+              "ok": true,
+              "pred": "96",
+              "gold": "96",
+              "finish": "stop",
+              "reasoning_tokens": 102,
+              "completion_tokens": 312,
+              "wall_s": 29.94
+            },
+            {
+              "i": 24,
+              "ok": true,
+              "pred": "90",
+              "gold": "90",
+              "finish": "stop",
+              "reasoning_tokens": 59,
+              "completion_tokens": 167,
+              "wall_s": 16.08
+            },
+            {
+              "i": 25,
+              "ok": false,
+              "pred": "1800",
+              "gold": "360",
+              "finish": "stop",
+              "reasoning_tokens": 113,
+              "completion_tokens": 383,
+              "wall_s": 36.17
+            },
+            {
+              "i": 26,
+              "ok": true,
+              "pred": "30",
+              "gold": "30",
+              "finish": "stop",
+              "reasoning_tokens": 90,
+              "completion_tokens": 390,
+              "wall_s": 36.84
+            },
+            {
+              "i": 27,
+              "ok": true,
+              "pred": "15",
+              "gold": "15",
+              "finish": "stop",
+              "reasoning_tokens": 67,
+              "completion_tokens": 219,
+              "wall_s": 20.98
+            },
+            {
+              "i": 28,
+              "ok": true,
+              "pred": "3",
+              "gold": "3",
+              "finish": "stop",
+              "reasoning_tokens": 113,
+              "completion_tokens": 448,
+              "wall_s": 41.82
+            },
+            {
+              "i": 29,
+              "ok": true,
+              "pred": "6",
+              "gold": "6",
+              "finish": "stop",
+              "reasoning_tokens": 64,
+              "completion_tokens": 159,
+              "wall_s": 15.42
+            }
+          ]
+        },
+        "humaneval": {
+          "n": 20,
+          "passed": 15,
+          "pass_at_1": 0.75,
+          "mean_reasoning_tokens": 329.7,
+          "mean_completion_tokens": 663.5,
+          "mean_wall_s": 63.290511752205205,
+          "tok_s": 10.483403935770546,
+          "details": [
+            {
+              "i": 0,
+              "task_id": "HumanEval/82",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 214,
+              "completion_tokens": 388,
+              "wall_s": 37.09
+            },
+            {
+              "i": 1,
+              "task_id": "HumanEval/115",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 331,
+              "completion_tokens": 898,
+              "wall_s": 85.72
+            },
+            {
+              "i": 2,
+              "task_id": "HumanEval/92",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 442,
+              "completion_tokens": 785,
+              "wall_s": 74.7
+            },
+            {
+              "i": 3,
+              "task_id": "HumanEval/161",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 165,
+              "completion_tokens": 358,
+              "wall_s": 34.36
+            },
+            {
+              "i": 4,
+              "task_id": "HumanEval/47",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 457,
+              "completion_tokens": 822,
+              "wall_s": 77.97
+            },
+            {
+              "i": 5,
+              "task_id": "HumanEval/51",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 124,
+              "completion_tokens": 339,
+              "wall_s": 32.46
+            },
+            {
+              "i": 6,
+              "task_id": "HumanEval/50",
+              "ok": false,
+              "err": "ost recent call last):\n  File \"/tmp/tmps1j34kl4/prog.py\", line 28, in <module>\n    check(decode_shift)\n  File \"/tmp/tmps1j34kl4/prog.py\", line 23, in check\n    encoded_str = encode_shift(str)\n                  ^^^^^^^^^^^^\nNameError: name 'encode_shift' is not defined. Did you mean: 'decode_shift'?\n",
+              "finish": "stop",
+              "reasoning_tokens": 114,
+              "completion_tokens": 214,
+              "wall_s": 20.38
+            },
+            {
+              "i": 7,
+              "task_id": "HumanEval/146",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 419,
+              "completion_tokens": 821,
+              "wall_s": 77.4
+            },
+            {
+              "i": 8,
+              "task_id": "HumanEval/36",
+              "ok": false,
+              "err": "Traceback (most recent call last):\n  File \"/tmp/tmpqbl6c3v9/prog.py\", line 22, in <module>\n    check(fizz_buzz)\n          ^^^^^^^^^\nNameError: name 'fizz_buzz' is not defined\n",
+              "finish": "length",
+              "reasoning_tokens": 551,
+              "completion_tokens": 1024,
+              "wall_s": 99.05
+            },
+            {
+              "i": 9,
+              "task_id": "HumanEval/109",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 393,
+              "completion_tokens": 920,
+              "wall_s": 88.21
+            },
+            {
+              "i": 10,
+              "task_id": "HumanEval/81",
+              "ok": false,
+              "err": "  File \"/tmp/tmpf7nd2vyi/prog.py\", line 3\n    ```python\n    ^\nSyntaxError: invalid syntax\n",
+              "finish": "length",
+              "reasoning_tokens": 290,
+              "completion_tokens": 1024,
+              "wall_s": 97.62
+            },
+            {
+              "i": 11,
+              "task_id": "HumanEval/30",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 67,
+              "completion_tokens": 208,
+              "wall_s": 20.42
+            },
+            {
+              "i": 12,
+              "task_id": "HumanEval/61",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 229,
+              "completion_tokens": 401,
+              "wall_s": 38.28
+            },
+            {
+              "i": 13,
+              "task_id": "HumanEval/105",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 274,
+              "completion_tokens": 837,
+              "wall_s": 79.95
+            },
+            {
+              "i": 14,
+              "task_id": "HumanEval/144",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 190,
+              "completion_tokens": 502,
+              "wall_s": 48.05
+            },
+            {
+              "i": 15,
+              "task_id": "HumanEval/95",
+              "ok": false,
+              "err": "  File \"/tmp/tmp2r9mv2up/prog.py\", line 5\n    \"\"\"\n    ^\nSyntaxError: unterminated triple-quoted string literal (detected at line 32)\n",
+              "finish": "length",
+              "reasoning_tokens": 711,
+              "completion_tokens": 1024,
+              "wall_s": 97.42
+            },
+            {
+              "i": 16,
+              "task_id": "HumanEval/45",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 94,
+              "completion_tokens": 162,
+              "wall_s": 16.03
+            },
+            {
+              "i": 17,
+              "task_id": "HumanEval/87",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 380,
+              "completion_tokens": 894,
+              "wall_s": 84.32
+            },
+            {
+              "i": 18,
+              "task_id": "HumanEval/132",
+              "ok": false,
+              "err": "  File \"/tmp/tmpc4tcudh1/prog.py\", line 5\n    '''\n    ^\nSyntaxError: unterminated triple-quoted string literal (detected at line 32)\n",
+              "finish": "length",
+              "reasoning_tokens": 790,
+              "completion_tokens": 1024,
+              "wall_s": 97.14
+            },
+            {
+              "i": 19,
+              "task_id": "HumanEval/158",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 359,
+              "completion_tokens": 625,
+              "wall_s": 59.24
+            }
+          ]
+        },
+        "tools": {
+          "passed": true,
+          "turns": 3,
+          "final": "93.50 EUR",
+          "calls": [
+            "lookup_price",
+            "lookup_price",
+            "calculator"
+          ],
+          "used_lookup": true,
+          "used_calc": true,
+          "answer_ok": true
+        },
+        "needle": {
+          "passed": true,
+          "content": "ORCHID-7431-TANGO",
+          "doc_chars": 41210,
+          "completion_tokens": 84,
+          "wall_s": 30.0
+        }
+      }
+    }
+  }
+}
