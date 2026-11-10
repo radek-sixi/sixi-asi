@@ -1,0 +1,58 @@
+diff --git a/ggml/src/ggml-cuda/dequantize.cuh b/ggml/src/ggml-cuda/dequantize.cuh
+index 651524be7..75e5a1587 100644
+--- a/ggml/src/ggml-cuda/dequantize.cuh
++++ b/ggml/src/ggml-cuda/dequantize.cuh
+@@ -404,6 +404,19 @@ static __device__ __forceinline__ void dequantize_iq1_m(const void * vx, const i
+     }
+ }
+ 
++// 32-value block variant (same convention as dequantize_q4_0): used by get_rows for rows that are a multiple of
++// QK4_NL but not of QK_K, e.g. per-layer embedding tables with 160-wide rows (Qwen3.8 Flash-Next PLE).
++static __device__ __forceinline__ void dequantize_iq4_nl_q(const void * vx, const int64_t ib, const int iqs, float2 & v) {
++    const block_iq4_nl * x = (const block_iq4_nl *) vx;
++
++    const float d = __half2float(x[ib].d);
++
++    const int vui = x[ib].qs[iqs];
++
++    v.x = d * kvalues_iq4nl[vui & 0xF];
++    v.y = d * kvalues_iq4nl[vui >> 4];
++}
++
+ template<typename dst_t>
+ static __device__ __forceinline__ void dequantize_iq4_nl(const void * vx, const int64_t ibs, dst_t * yy, const int tid) {
+ 
+diff --git a/ggml/src/ggml-cuda/getrows.cu b/ggml/src/ggml-cuda/getrows.cu
+index d97e8fdb0..0968f6926 100644
+--- a/ggml/src/ggml-cuda/getrows.cu
++++ b/ggml/src/ggml-cuda/getrows.cu
+@@ -393,8 +393,14 @@ static void ggml_cuda_get_rows_switch_src0_type(
+                 ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
+             break;
+         case GGML_TYPE_IQ4_NL:
+-            get_rows_cuda_kq<32, dst_t, dequantize_iq4_nl<dst_t>>(src0_d, src1_d, dst_d,
+-                ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
++            if (ne00 % QK_K != 0) {
++                // rows made of 32-value blocks only: walk the blocks directly instead of QK_K super-blocks
++                get_rows_cuda_q<QK4_NL, QR4_NL, dequantize_iq4_nl_q>(src0_d, src1_d, dst_d,
++                    ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
++            } else {
++                get_rows_cuda_kq<32, dst_t, dequantize_iq4_nl<dst_t>>(src0_d, src1_d, dst_d,
++                    ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
++            }
+             break;
+         case GGML_TYPE_IQ4_XS:
+             get_rows_cuda_kq<32, dst_t, dequantize_iq4_xs<dst_t>>(src0_d, src1_d, dst_d,
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index a49c5247a..262d9ee42 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -6058,6 +6058,8 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
+                     case GGML_TYPE_IQ4_XS:
+                         return true;
+                     case GGML_TYPE_IQ4_NL:
++                        // QK_K super-block kernel, or the 32-value block kernel for narrower rows
++                        return op->src[0]->ne[0] % QK4_NL == 0;
+                     case GGML_TYPE_MXFP4:
+                         // 32-value sub-blocks, the row size does not guarantee
+                         // the QK_K super-blocks the get_rows kernel iterates on

@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "sixi_asi/speculative.hpp"
 
 #include <algorithm>
@@ -96,6 +97,7 @@ std::optional<DraftProposal> SuffixDrafter::propose(
 
     DraftProposal prop{};
     prop.source = DraftSource::SuffixContext;
+    prop.match_len = static_cast<uint32_t>(best_match_len);
     prop.draft_tokens.resize(k);
     prop.draft_probs.resize(k);
 
@@ -161,6 +163,7 @@ std::optional<DraftProposal> SuffixDrafter::propose_anchored(
 
     DraftProposal prop{};
     prop.source = DraftSource::SuffixContext;
+    prop.match_len = static_cast<uint32_t>(best_match_len);
     prop.draft_tokens.resize(k);
 
     const size_t span = n - best_cont_pos;
@@ -336,6 +339,32 @@ void SpeculativeDecoder::reset_stats() {
     stats_.rejections_by_position.assign(static_cast<size_t>(max_k) + 1u, 0ULL);
 }
 
+bool SpeculativeDecoder::suffix_defers_to_neural(const DraftProposal& p) const noexcept {
+    // Measured 2026-11-09 (Qwen3.8-27B + DSpine b16): a 4-token suffix match used to replace the block drafter's
+    // proposal; on identical text the DSpine draft was accepted further (11 vs 6 tokens) in exactly those steps, and
+    // never using the suffix drafter next to DSpine is fastest on both quants. Chained MTP (k <= 4) is unaffected.
+    static const long env_thr = [] {
+        const char* e = std::getenv("SIXI_SUFFIX_OVER_NEURAL");
+        return (e != nullptr && *e != '\0') ? std::strtol(e, nullptr, 10) : -1L;
+    }();
+    if (cfg_.neural_drafter == NeuralDrafterType::None) {
+        return false;
+    }
+    const bool embedded = target_backend_ != nullptr && target_backend_->has_embedded_mtp_drafter();
+    if (!embedded && neural_drafter_ == nullptr) {
+        return false;
+    }
+    const uint32_t thr = (env_thr >= 0) ? static_cast<uint32_t>(env_thr) : cfg_.suffix_min_match_over_neural;
+    if (thr > 0) {
+        return p.match_len < thr;
+    }
+    if (env_thr == 0) {
+        return false;   // explicit 0 from the environment: old rule
+    }
+    // auto: block drafters always win over the suffix drafter
+    return embedded && target_backend_->max_useful_draft_k() >= 7u;  // DSpine b16: 15, DSpark / DFlash2: 7
+}
+
 Result<SpeculativeStepResult> SpeculativeDecoder::step(
     std::vector<int32_t>& context_tokens,
     std::vector<float>& current_last_logits,
@@ -464,7 +493,10 @@ Result<SpeculativeStepResult> SpeculativeDecoder::step(
 
         if (cfg_.enable_suffix_drafter) {
             proposal = suffix_drafter_.propose_anchored(context_tokens, anchor_t0, fast_k);
-            if (proposal.has_value()) {
+            if (proposal.has_value() && suffix_defers_to_neural(*proposal)) {
+                proposal.reset();
+                ++stats_.suffix_deferred;
+            } else if (proposal.has_value()) {
                 ++stats_.suffix_hits;
                 draft_ms = proposal->draft_latency_ms;
             } else {
@@ -693,16 +725,7 @@ Result<SpeculativeStepResult> SpeculativeDecoder::step(
         stats_.mean_acceptance_length =
             static_cast<double>(stats_.total_emitted_tokens) / static_cast<double>(stats_.total_steps);
 
-        if (!cfg_.adaptive_k) {
-            current_k_ = cfg_.draft_k;
-        } else {
-            if (step_res.accepted_draft_count == proposed_k) {
-                current_k_ = std::min(cfg_.max_adaptive_k, current_k_ + 1u);
-            } else if (step_res.accepted_draft_count * 2u < proposed_k) {
-                current_k_ = (current_k_ > cfg_.min_adaptive_k) ? (current_k_ - 1u) : cfg_.min_adaptive_k;
-            }
-            current_k_ = std::clamp(current_k_, cfg_.min_adaptive_k, cfg_.max_adaptive_k);
-        }
+        update_adaptive_k(step_res.accepted_draft_count, proposed_k);
 
         return Result<SpeculativeStepResult>(std::move(step_res));
     }
@@ -714,7 +737,10 @@ Result<SpeculativeStepResult> SpeculativeDecoder::step(
     if (cfg_.enable_suffix_drafter) {
         const uint64_t dist_vocab = (sampling.temperature > 0.0f) ? vocab_sz : 0ULL;
         proposal = suffix_drafter_.propose(context_tokens, k, dist_vocab);
-        if (proposal.has_value()) {
+        if (proposal.has_value() && suffix_defers_to_neural(*proposal)) {
+            proposal.reset();
+            ++stats_.suffix_deferred;
+        } else if (proposal.has_value()) {
             ++stats_.suffix_hits;
             draft_ms = proposal->draft_latency_ms;
         } else {
@@ -938,16 +964,7 @@ Result<SpeculativeStepResult> SpeculativeDecoder::step(
         static_cast<double>(stats_.total_emitted_tokens) / static_cast<double>(stats_.total_steps);
 
     // Update current_k_ according to ExecutionMode
-    if (!cfg_.adaptive_k) {
-        current_k_ = cfg_.draft_k;
-    } else {
-        if (step_res.accepted_draft_count == proposed_k) {
-            current_k_ = std::min(cfg_.max_adaptive_k, current_k_ + 1u);
-        } else if (step_res.accepted_draft_count * 2u < proposed_k) {
-            current_k_ = (current_k_ > cfg_.min_adaptive_k) ? (current_k_ - 1u) : cfg_.min_adaptive_k;
-        }
-        current_k_ = std::clamp(current_k_, cfg_.min_adaptive_k, cfg_.max_adaptive_k);
-    }
+    update_adaptive_k(step_res.accepted_draft_count, proposed_k);
 
     return Result<SpeculativeStepResult>(std::move(step_res));
 }

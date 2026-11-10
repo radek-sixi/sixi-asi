@@ -1,0 +1,142 @@
+{
+  "max_tokens": 256,
+  "repeats": 3,
+  "temperature": 0.0,
+  "engines": {
+    "edgellm-dspark-think": "http://127.0.0.1:8000@RadixArk/Qwen3.8-27B-NVFP4"
+  },
+  "raw_engines": {},
+  "merged_from": null,
+  "tasks": [
+    {
+      "name": "GSM8K-Math",
+      "engines": {
+        "edgellm-dspark-think": {
+          "runs_decode_tok_s": [
+            38.17516251085691,
+            38.16611341882644,
+            38.057990496178
+          ],
+          "runs_ttft_s": [
+            0.24216071299815667,
+            0.24520913099695463,
+            0.24242845100161503
+          ],
+          "decode_tok_s_median": 38.16611341882644,
+          "decode_tok_s_mean": 38.13308880862045,
+          "decode_tok_s_stdev": 0.05323087397004216,
+          "ttft_s_median": 0.24242845100161503,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": null,
+          "text": "We need answer arithmetic. Need compute total energy consumption kWh over 5 hours. Data center 4 racks *12 nodes =48 nodes. 75% peak: 0.75*48=36 nodes. 25% idle:12 nodes. Peak 850W, idle 250W. Total power =36*850 +12*250 =30600+3000=33600 W =33.6 kW. Over 5h =168 kWh. Need show arithmetic and end with exact number. Ensure final ends with exact number maybe \"168 kWh\" or just 168? User: \"end with the exact number.\" Could end with 168 kWh? Exact number likely 168. To be safe final line: 168 kWh? They said exact number, maybe just 168. But include units? \"end with the exact number\" maybe last token number. Could write final sentence: The total energy consumption is 168 kWh. Ends with kWh not number. If strict, end with \"168\". But need units? Could\u241e",
+          "repeat_identical": true
+        }
+      }
+    },
+    {
+      "name": "HumanEval-Code",
+      "engines": {
+        "edgellm-dspark-think": {
+          "runs_decode_tok_s": [
+            29.131278381912278,
+            29.242151763315945,
+            29.193526017165638
+          ],
+          "runs_ttft_s": [
+            0.5122993759978272,
+            0.2349769259999448,
+            0.23505000200020731
+          ],
+          "decode_tok_s_median": 29.193526017165638,
+          "decode_tok_s_mean": 29.18898538746462,
+          "decode_tok_s_stdev": 0.04537759847128761,
+          "ttft_s_median": 0.23505000200020731,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": null,
+          "text": "We need answer user: \"Write a clean, self-contained C++20 function `uint64_t prefix_xor_max(std::span<const uint64_t> arr)` that computes the maximum XOR of any prefix of `arr`. Include headers and a short complexity comment.\"\n\nNeed produce final code. Need think about requirements. C++20, std::span. Function computes maximum XOR of any prefix of arr. Prefix likely non-empty? \"any prefix\" could include empty prefix? Usually prefix XOR of arr: XOR of first k elements for k=1..n. Maximum XOR of any prefix. If empty prefix allowed, XOR=0. But maximum over prefixes likely non-empty; if all? For empty array? Need handle. Since uint64_t, max prefix XOR. Simple O(n): running xor, max. Include <cstdint>, <span>, maybe <algorithm> for max? Could use std::max. Self-contained. Need short complexity comment.\n\nPotential edge cases: empty span. What return? If no prefixes, maybe 0. But if non-empty prefixes only and empty input undefined? Better return 0 for empty. If empty prefix not considered, for empty no prefix; returning 0 is safe. If arr contains values\u241e",
+          "repeat_identical": true
+        }
+      }
+    },
+    {
+      "name": "MT-Bench-JSON",
+      "engines": {
+        "edgellm-dspark-think": {
+          "runs_decode_tok_s": [
+            49.968181506312845,
+            49.99476775349775,
+            50.04853492983102
+          ],
+          "runs_ttft_s": [
+            0.23659874599979958,
+            0.23590838400195935,
+            0.2336002299998654
+          ],
+          "decode_tok_s_median": 49.99476775349775,
+          "decode_tok_s_mean": 50.003828063213874,
+          "decode_tok_s_stdev": 0.03342389441589054,
+          "ttft_s_median": 0.23590838400195935,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": null,
+          "text": "We need answer user's request: \"Output ONLY a valid JSON object describing a hypothetical inference engine with keys: \"engine\" (string), \"target_models\" (array of 2 strings), \"state_dtype\" (string), \"max_vram_gib\" (number), and \"speculative_decoders\" (array of strings).\"\n\nNeed output only valid JSON object. No markdown. Ensure keys exactly. Hypothetical. target_models array of 2 strings. state_dtype string. max_vram_gib number. speculative_decoders array strings. Could be:\n{\n  \"engine\": \"HypotheticalInferenceEngine\",\n  \"target_models\": [\"model-a\", \"model-b\"],\n  \"state_dtype\": \"float16\",\n  \"max_vram_gib\": 48,\n  \"speculative_decoders\": [\"draft-model\", \"ngram\"]\n}\nNeed only JSON. Ensure valid.\n\u241e\n\n{\n  \"engine\": \"HypotheticalInferenceEngine\",\n  \"target_models\": [\n    \"model-a\",\n    \"model-b\"\n  ],\n  \"state_dtype\": \"float16\",\n  \"max_vram_gib\": ",
+          "repeat_identical": true
+        }
+      }
+    },
+    {
+      "name": "RAG-Code-Refactor",
+      "engines": {
+        "edgellm-dspark-think": {
+          "runs_decode_tok_s": [
+            38.853372851465416,
+            38.74933362561625,
+            38.74045802616166
+          ],
+          "runs_ttft_s": [
+            0.2577335059977486,
+            0.2556817359982233,
+            0.2558530200003588
+          ],
+          "decode_tok_s_median": 38.74933362561625,
+          "decode_tok_s_mean": 38.78105483441444,
+          "decode_tok_s_stdev": 0.05126477516487745,
+          "ttft_s_median": 0.2558530200003588,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": null,
+          "text": "We need answer user's request: refactor struct by adding noexcept to every method and changing float to double, keeping all names and comments identical. Need produce code. Need ensure every method: record_request and reset_counters get noexcept. Change float to double: member types and parameter. Also literals? 0.0f to 0.0? Since changing float to double, likely use 0.0. Keep names/comments identical. There are no comments. Need maybe include <cstdint>? Original uses uint64_t but no include. Keep as is? Refactor only struct. Could output code block. Need be careful: noexcept after return type before name? void record_request(uint64_t tokens, double latency_ms) noexcept { ... } void reset_counters() noexcept { ... }. Member initializers: double min_latency_ms = 0.0; double max_latency_ms = 0.0; Parameter double latency_ms. All names identical. No comments. Final concise.\n\u241e\n\n```cpp\nstruct TelemetryCounter {\n    uint64_t total_requests = 0;\n    uint64_t total_tokens = 0;\n    double min_latency_ms = 0.0;\n    double max_latency_ms = 0.0;",
+          "repeat_identical": true
+        }
+      }
+    },
+    {
+      "name": "Arch-Systems-TG",
+      "engines": {
+        "edgellm-dspark-think": {
+          "runs_decode_tok_s": [
+            24.187400948029527,
+            24.191152613776026,
+            24.174962173865666
+          ],
+          "runs_ttft_s": [
+            0.2339936000025773,
+            0.23433367100005853,
+            0.23384182999870973
+          ],
+          "decode_tok_s_median": 24.187400948029527,
+          "decode_tok_s_mean": 24.18450524522374,
+          "decode_tok_s_stdev": 0.00691960534410899,
+          "ttft_s_median": 0.2339936000025773,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": null,
+          "text": "We need answer user: \"Explain in 4 concise bullet points why hybrid Gated DeltaNet (linear recurrent state) + full-attention models need O(1) state checkpointing during speculative decoding compared to standard Transformer KV caches.\"\n\nNeed produce 4 concise bullets. Need understand context. Hybrid Gated DeltaNet linear recurrent state + full attention. Speculative decoding. Need O(1) state checkpointing compared to standard Transformer KV caches. Why? Let's reason.\n\nSpeculative decoding: draft model proposes multiple tokens, target verifies. Need rollback if rejected. For standard Transformer KV cache, to verify multiple candidate tokens, you can append draft KV entries and if reject, truncate cache to accepted prefix. State size grows O(sequence length) for attention layers; checkpointing? Maybe need save/restore KV cache at branch points? In speculative decoding, if using tree verification or multiple candidates, need preserve KV state for each speculative step? Standard KV caches are append-only and can be truncated; but for branching, need copy or checkpoint O(n) KV per branch? Hybrid linear recurrent state (Gated DeltaNet) has fixed-size recurrent state (O(1) w.r.t sequence length) that is updated sequentially. Full attention layers have KV cache O(n).\u241e",
+          "repeat_identical": true
+        }
+      }
+    }
+  ]
+}

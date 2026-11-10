@@ -209,7 +209,7 @@ struct ModelManifest {
     std::string manifest_id;
     std::string model_name;
     std::string base_model;
-    std::string converter_version = "sixi-asi-0.8.1";
+    std::string converter_version = "sixi-asi-0.1.0";
     bool text_only = true; // When true, vision tower / mmproj weights are explicitly excluded from execution/VRAM
     std::string excluded_mmproj_path;
     Bytes excluded_mmproj_bytes = 0;

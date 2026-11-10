@@ -4,6 +4,7 @@
 #include "sixi_asi/core_execution.hpp"
 #include "sixi_asi/manifest.hpp"
 #include <cstdint>
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
@@ -25,6 +26,7 @@ struct DraftProposal {
     std::vector<int32_t> draft_tokens;                 // Length k
     std::vector<std::vector<float>> draft_probs;       // [k][vocab_size] (full or expanded distribution for sampling)
     double draft_latency_ms = 0.0;
+    uint32_t match_len = 0;   // suffix drafter: matched context tokens behind the proposal (anchor included)
 };
 
 // 1. Suffix / Context Drafter (Prompt & Context n-gram lookup, Section 8)
@@ -95,6 +97,11 @@ struct SpeculativeConfig {
     ExecutionMode execution_mode = ExecutionMode::StrictReplay;
     bool enable_suffix_drafter = true;
     uint32_t suffix_min_match_len = 3;
+    // Suffix-vs-neural arbitration. 0 (auto): with a block drafter (DSpine / DSpark / DFlash2, max useful k >= 7) the suffix
+    // drafter never replaces the neural draft; with chained MTP or no neural drafter any suffix match wins (old rule).
+    // N > 0: with any neural drafter, a suffix proposal wins only when backed by >= N matched context tokens.
+    // Env SIXI_SUFFIX_OVER_NEURAL overrides (experiments). Measured 2026-11-09, BENCHMARKS section 14.
+    uint32_t suffix_min_match_over_neural = 0;
     NeuralDrafterType neural_drafter = NeuralDrafterType::MTP; // Only ONE neural drafter allowed
     uint32_t draft_k = 4;      // Initial draft length (fixed when adaptive_k is false)
     // Acceptance-driven draft length: +1 after a fully accepted step, -1 when fewer than half the drafts were
@@ -103,6 +110,10 @@ struct SpeculativeConfig {
     bool adaptive_k = true;
     uint32_t min_adaptive_k = 1;
     uint32_t max_adaptive_k = 8;
+    // Draft lengths the adaptive walk jumps over (inclusive, 0/0 = none): the backend's slow verify-batch band
+    // (IBackend::slow_draft_k_band). Going up from skip_k_lo-1 lands on skip_k_hi+1 and vice versa.
+    uint32_t skip_k_lo = 0;
+    uint32_t skip_k_hi = 0;
 };
 
 struct SpeculativeStepResult {
@@ -121,6 +132,7 @@ struct SpeculativeStats {
     uint64_t total_steps = 0;
     uint64_t suffix_hits = 0;
     uint64_t suffix_misses = 0;
+    uint64_t suffix_deferred = 0;   // suffix matches too short to override the neural drafter
     uint64_t neural_draft_calls = 0;
     uint64_t drafter_fallbacks_to_ar = 0;
     uint64_t total_drafted_tokens = 0;
@@ -168,10 +180,59 @@ public:
         return std::nullopt;
     }
     void clear_carried_token() noexcept { carried_token_ = -1; carried_ctx_len_ = 0; }
+    // Hand the decoder an anchor the caller already sampled for the position after context_tokens
+    // (the server emits the post-prefill token before the first speculative step).
+    void set_carried_token(int32_t tok, size_t ctx_len) noexcept { carried_token_ = tok; carried_ctx_len_ = ctx_len; }
 
 private:
+    bool suffix_defers_to_neural(const DraftProposal& p) const noexcept;
+    bool in_skip_band(uint32_t k) const noexcept {
+        return cfg_.skip_k_lo > 0 && cfg_.skip_k_hi >= cfg_.skip_k_lo && k >= cfg_.skip_k_lo && k <= cfg_.skip_k_hi;
+    }
+    uint32_t next_k_up(uint32_t k) const noexcept {
+        uint32_t n = std::min(cfg_.max_adaptive_k, k + 1u);
+        if (in_skip_band(n)) {
+            n = (cfg_.skip_k_hi + 1u <= cfg_.max_adaptive_k) ? cfg_.skip_k_hi + 1u : k;   // cannot clear the band: stay
+        }
+        return n;
+    }
+    uint32_t next_k_down(uint32_t k) const noexcept {
+        uint32_t n = (k > cfg_.min_adaptive_k) ? (k - 1u) : cfg_.min_adaptive_k;
+        if (in_skip_band(n)) {
+            n = (cfg_.skip_k_lo >= 1u && cfg_.skip_k_lo - 1u >= cfg_.min_adaptive_k) ? cfg_.skip_k_lo - 1u : cfg_.skip_k_hi + 1u;
+        }
+        return n;
+    }
+
+    // Flat-band policy (block drafters whose verify batch reaches the MMQ path): the step cost is flat from
+    // skip_k_hi+1 to max_adaptive_k (150-172 ms for 9..16 rows on Thor), so k sits at max_adaptive_k and drops to
+    // skip_k_lo-1 only while the EWMA of accepted drafts says the drafts barely land (prose), with hysteresis.
+    bool flat_band() const noexcept { return cfg_.skip_k_hi > 0 && cfg_.max_adaptive_k > cfg_.skip_k_hi; }
+    void update_adaptive_k(uint32_t accepted, uint32_t proposed) noexcept {
+        if (!cfg_.adaptive_k) { current_k_ = cfg_.draft_k; return; }
+        if (flat_band()) {
+            acc_ewma_ = ewma_init_ ? 0.8 * acc_ewma_ + 0.2 * static_cast<double>(accepted) : static_cast<double>(accepted);
+            ewma_init_ = true;
+            const uint32_t lo_k = std::max(cfg_.min_adaptive_k, cfg_.skip_k_lo - 1u);
+            if (current_k_ > cfg_.skip_k_hi) {
+                if (acc_ewma_ < 2.5) current_k_ = lo_k;
+            } else if (acc_ewma_ >= 3.0 || (proposed > 0 && accepted == proposed)) {
+                current_k_ = cfg_.max_adaptive_k;
+            }
+            return;
+        }
+        if (proposed > 0 && accepted == proposed) {
+            current_k_ = next_k_up(current_k_);
+        } else if (accepted * 2u < proposed) {
+            current_k_ = next_k_down(current_k_);
+        }
+        current_k_ = std::clamp(current_k_, cfg_.min_adaptive_k, cfg_.max_adaptive_k);
+    }
+
     SpeculativeConfig cfg_;
     uint32_t current_k_;
+    double acc_ewma_ = 0.0;
+    bool ewma_init_ = false;
     SuffixDrafter suffix_drafter_;
     std::shared_ptr<core::IBackend> target_backend_;
     std::shared_ptr<INeuralDrafter> neural_drafter_;

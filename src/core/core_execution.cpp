@@ -8,7 +8,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <dlfcn.h>
 #include <filesystem>
 #include <fstream>
@@ -1205,6 +1207,7 @@ using fn_llama_memory_seq_rm_t = bool (*)(void*, int32_t, int32_t, int32_t);
 using fn_llama_memory_seq_cp_t = void (*)(void*, int32_t, int32_t, int32_t, int32_t);
 using fn_llama_n_rs_seq_t = uint32_t (*)(const void*);
 using fn_llama_model_n_embd_t = int32_t (*)(const void*);
+using fn_llama_model_rope_type_t = int32_t (*)(const void*);
 using fn_llama_model_n_layer_nextn_t = int32_t (*)(const void*);
 using fn_llama_model_n_embd_out_t = int32_t (*)(const void*);
 using fn_llama_model_meta_val_str_t = int32_t (*)(const void*, const char*, char*, size_t);
@@ -1223,6 +1226,17 @@ using fn_llama_vocab_is_eog_t = bool (*)(const void*, int32_t);
 using fn_llama_model_dflash_selector_top_k_t = int32_t (*)(const void*);
 using fn_llama_model_chat_template_t = const char* (*)(const void*, const char*);
 using fn_ggml_backend_load_all_from_path_t = void (*)(const char*);
+using fn_ggml_backend_dev_count_t = size_t (*)();
+using fn_ggml_backend_dev_get_t = void* (*)(size_t);
+using fn_ggml_backend_dev_type_t = int32_t (*)(void*);
+using fn_ggml_backend_dev_buffer_type_t = void* (*)(void*);
+using fn_ggml_backend_dev_name_t = const char* (*)(void*);
+
+// llama_model_tensor_buft_override: { const char* pattern; ggml_backend_buffer_type_t buft; }, null-terminated
+struct LlamaTensorBuftOverrideRaw {
+    const char* pattern;
+    void* buft;
+};
 
 // Composite snapshot framing stored in BackendSequenceState::opaque_backend_state.
 // Older blobs without the magic are treated as a bare target-context state (backward compatible).
@@ -1298,6 +1312,7 @@ struct LlamaCppBackend::Impl {
     void* ctx = nullptr;
     void* ctx_sampler_chain = nullptr;
     void* ctx_mtp = nullptr;
+    void* model_mtp = nullptr;          // separate MTP-head model (LoadOptions::mtp_model_path); nullptr when the MTP block is embedded
     void* mtp_sampler_chain = nullptr;
     void* model_dflash = nullptr;
     void* ctx_dflash = nullptr;
@@ -1307,11 +1322,14 @@ struct LlamaCppBackend::Impl {
     uint32_t n_embd_tgt = 0;
     uint32_t n_embd_dflash_dec = 0;
     uint32_t n_embd_dflash_enc = 0;
+    uint32_t dflash_n_pos_per_embd = 1;   // 4 on an M-RoPE drafter: embd batches carry [p, p, p, 0] per token, section-major
     const int32_t* dflash_target_layer_ids = nullptr;
     uint32_t dflash_target_layer_ids_n = 0;
     int32_t dflash_block_size = 16;
     int32_t dflash_mask_token_id = 0;
     int32_t dflash_selector_top_k = 0;   // > 0: DFlash2 (dsv4) candidate-lattice drafter
+    bool dflash_anchor_first = false;    // DSpark (sample_from_anchor): block = [anchor, mask...], drafts read from row 0
+    bool dflash_has_conf = false;        // DSpark confidence head: per-row acceptance estimate in the nextn embeddings
     bool dflash_is_v2 = false;
     bool dflash_fused_inject = false;    // library fuses feature encode + KV injection in one decode
     uint32_t active_n_rs_seq = 0;
@@ -1377,6 +1395,7 @@ struct LlamaCppBackend::Impl {
     fn_llama_memory_seq_cp_t llama_memory_seq_cp = nullptr;
     fn_llama_n_rs_seq_t llama_n_rs_seq = nullptr;
     fn_llama_model_n_embd_t llama_model_n_embd = nullptr;
+    fn_llama_model_rope_type_t llama_model_rope_type = nullptr;
     fn_llama_model_n_layer_nextn_t llama_model_n_layer_nextn = nullptr;
     fn_llama_model_n_embd_out_t llama_model_n_embd_out = nullptr;
     fn_llama_model_meta_val_str_t llama_model_meta_val_str = nullptr;
@@ -1447,6 +1466,10 @@ struct LlamaCppBackend::Impl {
             llama_free(ctx_mtp);
             ctx_mtp = nullptr;
         }
+        if (model_mtp != nullptr && llama_model_free != nullptr) {
+            llama_model_free(model_mtp);
+            model_mtp = nullptr;
+        }
         if (ctx_sampler_chain != nullptr) {
             if (ctx != nullptr && llama_set_sampler != nullptr) {
                 (void)llama_set_sampler(ctx, 0, nullptr);
@@ -1470,9 +1493,12 @@ struct LlamaCppBackend::Impl {
         n_embd_tgt = 0;
         n_embd_dflash_dec = 0;
         n_embd_dflash_enc = 0;
+        dflash_n_pos_per_embd = 1;
         dflash_target_layer_ids = nullptr;
         dflash_target_layer_ids_n = 0;
         dflash_selector_top_k = 0;
+        dflash_anchor_first = false;
+        dflash_has_conf = false;
         dflash_is_v2 = false;
         dflash_fused_inject = false;
         active_n_rs_seq = 0;
@@ -1518,6 +1544,7 @@ struct LlamaCppBackend::Impl {
         }
         const size_t start_pos = mtp_synced_len;
         const size_t total_catchup = N - start_pos;
+        const auto t_catchup0 = std::chrono::steady_clock::now();
         const size_t max_batch = (opts.n_batch > 0) ? static_cast<size_t>(opts.n_batch) : 512u;
 
         std::vector<int32_t> chunk_tokens;
@@ -1558,6 +1585,10 @@ struct LlamaCppBackend::Impl {
         if (llama_set_embeddings_nextn != nullptr) {
             llama_set_embeddings_nextn(ctx_mtp, true, false);
         }
+        if (trace_prefill()) {
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_catchup0).count();
+            std::fprintf(stderr, "sixi-asi: mtp catch-up from=%zu n=%zu ms=%.1f\n", start_pos, total_catchup, ms);
+        }
         mtp_synced_len = N;
     }
 
@@ -1573,6 +1604,11 @@ struct LlamaCppBackend::Impl {
         }
     }
 
+    static bool trace_prefill() noexcept {
+        static const bool enabled = (std::getenv("SIXI_TRACE_PREFILL") != nullptr);
+        return enabled;
+    }
+
     void observe_step_timing(double elapsed_ms, int32_t n_tokens) {
         telemetry.forward_steps++;
         telemetry.total_tokens_decoded += static_cast<uint64_t>(std::max<int32_t>(0, n_tokens));
@@ -1586,6 +1622,25 @@ struct LlamaCppBackend::Impl {
         timing.cpu_cumulative_work_ms = timing.cpu_wall_time_ms * static_cast<double>(std::max<uint32_t>(1u, opts.n_threads));
         telemetry.adaptive_offload_alpha = offload_controller.observe_and_update(timing);
         telemetry.adaptive_offload_adjustments = offload_controller.adjustment_count();
+    }
+
+    // Positions for an embedding batch on the drafter. llama.cpp reads pos[j * n_tokens + i] for j < n_pos_per_embd
+    // (section-major); an M-RoPE drafter (DSpine GGUFs carry rope.dimension_sections) needs [p, p, p, 0] per token.
+    // Handing it n_tokens entries read past the vector and crashed inside llama_batch_compat::init (2026-11-09).
+    int32_t dflash_max_drafts() const noexcept {
+        return dflash_anchor_first ? dflash_block_size : dflash_block_size - 1;
+    }
+
+    std::vector<int32_t> dflash_embd_positions(size_t pos_start, int32_t count) const {
+        const size_t n = static_cast<size_t>(std::max(0, count));
+        const size_t n_pos = std::max<uint32_t>(1u, dflash_n_pos_per_embd);
+        std::vector<int32_t> pos(n * n_pos, 0);
+        for (size_t j = 0; j < n_pos; ++j) {
+            for (size_t i = 0; i < n; ++i) {
+                pos[j * n + i] = (j < 3) ? static_cast<int32_t>(pos_start + i) : 0;
+            }
+        }
+        return pos;
     }
 
     void record_target_h_nextn_and_dflash(int32_t count, size_t batch_pos_start) {
@@ -1644,13 +1699,15 @@ struct LlamaCppBackend::Impl {
             }
             if (all_extracted && dflash_fused_inject) {
                 // One decode with the raw target features: the library projects (fc) and writes the draft KV cache
-                std::vector<int32_t> inject_pos(static_cast<size_t>(count));
+                std::vector<int32_t> inject_pos = dflash_embd_positions(batch_pos_start, count);
                 std::vector<int32_t> inject_n_seq(static_cast<size_t>(count), 1);
                 int32_t seq_zero = 0;
                 std::vector<int32_t*> inject_seq_ptr(static_cast<size_t>(count), &seq_zero);
                 std::vector<int8_t> inject_logits(static_cast<size_t>(count), 0);
-                for (int32_t i = 0; i < count; ++i) {
-                    inject_pos[static_cast<size_t>(i)] = static_cast<int32_t>(batch_pos_start + static_cast<size_t>(i));
+                if (trace_prefill()) {
+                    std::fprintf(stderr, "sixi-asi: dflash inject count=%d pos_start=%zu history=%zu synced=%zu enc=%u tgt=%u layers=%u feat=%zu\n",
+                                 count, batch_pos_start, history_tokens.size(), dflash_synced_len, n_embd_dflash_enc, n_embd_tgt,
+                                 dflash_target_layer_ids_n, features_buf.size());
                 }
                 LlamaBatchRaw inj_batch{};
                 inj_batch.n_tokens = count;
@@ -1674,14 +1731,11 @@ struct LlamaCppBackend::Impl {
                     if (inp_g != nullptr) {
                         std::vector<float> inject_embd(
                             inp_g, inp_g + static_cast<size_t>(count) * n_embd_dflash_dec);
-                        std::vector<int32_t> inject_pos(static_cast<size_t>(count));
+                        std::vector<int32_t> inject_pos = dflash_embd_positions(batch_pos_start, count);
                         std::vector<int32_t> inject_n_seq(static_cast<size_t>(count), 1);
                         int32_t seq_zero = 0;
                         std::vector<int32_t*> inject_seq_ptr(static_cast<size_t>(count), &seq_zero);
                         std::vector<int8_t> inject_logits(static_cast<size_t>(count), 0);
-                        for (int32_t i = 0; i < count; ++i) {
-                            inject_pos[static_cast<size_t>(i)] = static_cast<int32_t>(batch_pos_start + static_cast<size_t>(i));
-                        }
                         LlamaBatchRaw inj_batch{};
                         inj_batch.n_tokens = count;
                         inj_batch.embd = inject_embd.data();
@@ -1768,6 +1822,7 @@ Status LlamaCppBackend::load_model(const LoadOptions& opts) {
         }
     }
 
+    void* gpu_buft = nullptr;
     if (ggml_handle != nullptr) {
         auto load_all = reinterpret_cast<fn_ggml_backend_load_all_from_path_t>(
             dlsym(ggml_handle, "ggml_backend_load_all_from_path"));
@@ -1777,6 +1832,28 @@ Status LlamaCppBackend::load_model(const LoadOptions& opts) {
                 load_all(cuda13_dir.c_str());
             }
             load_all(lib_dir.c_str());
+        }
+        // Buffer type of the first non-CPU device (CUDA on Thor is reported as an integrated GPU), used for
+        // tensor placement overrides. The device registry lives in libggml, the accessors in libggml-base.
+        auto dev_count = reinterpret_cast<fn_ggml_backend_dev_count_t>(dlsym(ggml_handle, "ggml_backend_dev_count"));
+        auto dev_get = reinterpret_cast<fn_ggml_backend_dev_get_t>(dlsym(ggml_handle, "ggml_backend_dev_get"));
+        auto dev_type = reinterpret_cast<fn_ggml_backend_dev_type_t>(dlsym(RTLD_DEFAULT, "ggml_backend_dev_type"));
+        auto dev_buft = reinterpret_cast<fn_ggml_backend_dev_buffer_type_t>(dlsym(RTLD_DEFAULT, "ggml_backend_dev_buffer_type"));
+        auto dev_name = reinterpret_cast<fn_ggml_backend_dev_name_t>(dlsym(RTLD_DEFAULT, "ggml_backend_dev_name"));
+        if (dev_count != nullptr && dev_get != nullptr && dev_type != nullptr && dev_buft != nullptr) {
+            const size_t n_dev = dev_count();
+            for (size_t i = 0; i < n_dev; ++i) {
+                void* dev = dev_get(i);
+                if (dev == nullptr || dev_type(dev) == 0 /* GGML_BACKEND_DEVICE_TYPE_CPU */) {
+                    continue;
+                }
+                const char* nm = (dev_name != nullptr) ? dev_name(dev) : nullptr;
+                if (nm != nullptr && std::string_view(nm).find("CUDA") == std::string_view::npos) {
+                    continue;
+                }
+                gpu_buft = dev_buft(dev);
+                break;
+            }
         }
     }
 
@@ -1830,6 +1907,7 @@ Status LlamaCppBackend::load_model(const LoadOptions& opts) {
     (void)resolve(impl_->llama_memory_seq_cp, "llama_memory_seq_cp");
     (void)resolve(impl_->llama_n_rs_seq, "llama_n_rs_seq");
     (void)resolve(impl_->llama_model_n_embd, "llama_model_n_embd");
+    (void)resolve(impl_->llama_model_rope_type, "llama_model_rope_type");
     (void)resolve(impl_->llama_model_n_layer_nextn, "llama_model_n_layer_nextn");
     (void)resolve(impl_->llama_model_n_embd_out, "llama_model_n_embd_out");
     (void)resolve(impl_->llama_model_meta_val_str, "llama_model_meta_val_str");
@@ -1871,6 +1949,15 @@ Status LlamaCppBackend::load_model(const LoadOptions& opts) {
     impl_->telemetry.abi_layout_version = static_cast<uint32_t>(impl_->abi_variant);
 
     SIXI_MODEL_SET(mparams, n_gpu_layers, opts.n_gpu_layers);
+    // Hybrid MoE models (qwen4exp) keep a 27 GB per-layer token embedding table that llama.cpp maps on the host;
+    // on unified memory a GPU buffer costs nothing extra and removes the CPU gather + graph split per token.
+    static LlamaTensorBuftOverrideRaw ple_overrides[2] = {{"per_layer_token_embd\\.weight", nullptr}, {nullptr, nullptr}};
+    if (opts.ple_on_device && gpu_buft != nullptr && impl_->telemetry.abi_canary_verified &&
+        file_contains_qwen4exp(opts.model_path)) {
+        ple_overrides[0].buft = gpu_buft;
+        SIXI_MODEL_SET(mparams, tensor_buft_overrides, ple_overrides);
+        impl_->telemetry.ple_override_applied = true;
+    }
     if (impl_->telemetry.abi_canary_verified) {
         SIXI_MODEL_SET(mparams, load_mode, (opts.use_mmap && opts.use_mlock) ? 3 : (opts.use_mmap ? 1 : (opts.use_mlock ? 2 : 0)));
     }
@@ -1981,51 +2068,111 @@ Status LlamaCppBackend::load_model(const LoadOptions& opts) {
         }
     }
 
-    // Initialize embedded MTP draft context if the loaded GGUF contains NextN/MTP layers (e.g. blk.64 in Qwen3.8-27B)
-    if (can_load_mtp && impl_->llama_model_n_layer_nextn(impl_->model) > 0) {
-        const int32_t embd_out = impl_->llama_model_n_embd_out(impl_->model);
-        if (embd_out > 0) {
-            LlamaContextParamsOpaque cparams_mtp = impl_->llama_context_default_params();
-            SIXI_CTX_SET(cparams_mtp, n_ctx, n_ctx * impl_->n_seq_total);
-            SIXI_CTX_SET(cparams_mtp, n_seq_max, impl_->n_seq_total);
-            SIXI_CTX_SET(cparams_mtp, n_batch, n_batch);
-            SIXI_CTX_SET(cparams_mtp, n_ubatch, n_ubatch);
-            SIXI_CTX_SET(cparams_mtp, n_rs_seq, 0u); // MTP head is dense attention, n_rs_seq = 0
-            SIXI_CTX_SET(cparams_mtp, n_outputs_max, 1u * impl_->n_seq_total);
-            SIXI_CTX_SET(cparams_mtp, n_outputs_max_per_seq, 1u);
-            SIXI_CTX_SET(cparams_mtp, n_threads, n_threads);
-            SIXI_CTX_SET(cparams_mtp, n_threads_batch, n_threads);
-            SIXI_CTX_SET(cparams_mtp, ctx_type, 1);  // LLAMA_CONTEXT_TYPE_MTP
-
-            LlamaSamplerSeqConfigRaw mtp_sampler_seq_cfg{0, nullptr};
-            if (impl_->llama_sampler_chain_default_params != nullptr &&
-                impl_->llama_sampler_chain_init != nullptr &&
-                impl_->llama_sampler_chain_add != nullptr &&
-                impl_->llama_sampler_init_greedy != nullptr &&
-                impl_->llama_get_sampled_token_ith != nullptr) {
-                void* chain = impl_->llama_sampler_chain_init(impl_->llama_sampler_chain_default_params());
-                void* greedy = impl_->llama_sampler_init_greedy();
-                if (chain != nullptr && greedy != nullptr) {
-                    impl_->llama_sampler_chain_add(chain, greedy);
-                    impl_->mtp_sampler_chain = chain;
-                    mtp_sampler_seq_cfg.seq_id = 0;
-                    mtp_sampler_seq_cfg.sampler = chain;
-                    SIXI_CTX_SET(cparams_mtp, samplers, &mtp_sampler_seq_cfg);
-                    SIXI_CTX_SET(cparams_mtp, n_samplers, 1u);
-                } else if (chain != nullptr && impl_->llama_sampler_free != nullptr) {
-                    impl_->llama_sampler_free(chain);
+    // MTP draft context. Two sources for the MTP block:
+    //   embedded: the main GGUF carries NextN layers (Qwen3.8-27B blk.64)
+    //   external: a separate MTP-head GGUF (Qwen3.8-Flash-Next ships mtp-*.gguf; the UD quants drop blk.48). The head
+    //             file must carry its own token_embd/output on this library (the "-shared" variant needs upstream
+    //             support that the pinned commit lacks) and must match the target's h_nextn width and vocabulary.
+    auto init_mtp_context = [&](void* mtp_model, bool external) {
+        const int32_t embd_out = impl_->llama_model_n_embd_out(mtp_model);
+        if (embd_out <= 0) return;
+        if (external) {
+            const int32_t embd_out_tgt = impl_->llama_model_n_embd_out(impl_->model);
+            if (embd_out_tgt != embd_out) {
+                std::fprintf(stderr, "sixi-asi: external MTP head h width %d != target %d; drafter disabled\n",
+                             embd_out, embd_out_tgt);
+                return;
+            }
+            if (impl_->llama_model_get_vocab != nullptr && impl_->llama_vocab_n_tokens != nullptr) {
+                const int32_t nv_mtp = impl_->llama_vocab_n_tokens(impl_->llama_model_get_vocab(mtp_model));
+                const int32_t nv_tgt = impl_->llama_vocab_n_tokens(impl_->llama_model_get_vocab(impl_->model));
+                if (nv_mtp != nv_tgt) {
+                    std::fprintf(stderr, "sixi-asi: external MTP head vocab %d != target %d; drafter disabled\n",
+                                 nv_mtp, nv_tgt);
+                    return;
                 }
             }
+        }
+        LlamaContextParamsOpaque cparams_mtp = impl_->llama_context_default_params();
+        SIXI_CTX_SET(cparams_mtp, n_ctx, n_ctx * impl_->n_seq_total);
+        SIXI_CTX_SET(cparams_mtp, n_seq_max, impl_->n_seq_total);
+        SIXI_CTX_SET(cparams_mtp, n_batch, n_batch);
+        SIXI_CTX_SET(cparams_mtp, n_ubatch, n_ubatch);
+        SIXI_CTX_SET(cparams_mtp, n_rs_seq, 0u); // MTP head is dense attention, n_rs_seq = 0
+        SIXI_CTX_SET(cparams_mtp, n_outputs_max, 1u * impl_->n_seq_total);
+        SIXI_CTX_SET(cparams_mtp, n_outputs_max_per_seq, 1u);
+        SIXI_CTX_SET(cparams_mtp, n_threads, n_threads);
+        SIXI_CTX_SET(cparams_mtp, n_threads_batch, n_threads);
+        SIXI_CTX_SET(cparams_mtp, ctx_type, 1);  // LLAMA_CONTEXT_TYPE_MTP
+        if (external) {
+            SIXI_CTX_SET(cparams_mtp, ctx_other, impl_->ctx); // upstream sets it for every MTP draft context
+        }
 
-            impl_->ctx_mtp = impl_->llama_init_from_model(impl_->model, cparams_mtp);
-            if (impl_->ctx_mtp != nullptr) {
-                impl_->n_embd = static_cast<uint32_t>(embd_out);
-                impl_->llama_set_embeddings_nextn(impl_->ctx, true, false);
-                // Set masked=false on ctx_mtp so fused [start_pos .. N] batches (where only p==N has logits=1)
-                // store all batch token rows densely in embd_nextn, allowing exact indexing of row (count - 1).
-                impl_->llama_set_embeddings_nextn(impl_->ctx_mtp, true, false);
-                impl_->mtp_synced_len = 0;
-                impl_->telemetry.embedded_mtp_loaded = true;
+        LlamaSamplerSeqConfigRaw mtp_sampler_seq_cfg{0, nullptr};
+        if (impl_->llama_sampler_chain_default_params != nullptr &&
+            impl_->llama_sampler_chain_init != nullptr &&
+            impl_->llama_sampler_chain_add != nullptr &&
+            impl_->llama_sampler_init_greedy != nullptr &&
+            impl_->llama_get_sampled_token_ith != nullptr) {
+            void* chain = impl_->llama_sampler_chain_init(impl_->llama_sampler_chain_default_params());
+            void* greedy = impl_->llama_sampler_init_greedy();
+            if (chain != nullptr && greedy != nullptr) {
+                impl_->llama_sampler_chain_add(chain, greedy);
+                impl_->mtp_sampler_chain = chain;
+                mtp_sampler_seq_cfg.seq_id = 0;
+                mtp_sampler_seq_cfg.sampler = chain;
+                SIXI_CTX_SET(cparams_mtp, samplers, &mtp_sampler_seq_cfg);
+                SIXI_CTX_SET(cparams_mtp, n_samplers, 1u);
+            } else if (chain != nullptr && impl_->llama_sampler_free != nullptr) {
+                impl_->llama_sampler_free(chain);
+            }
+        }
+
+        impl_->ctx_mtp = impl_->llama_init_from_model(mtp_model, cparams_mtp);
+        if (impl_->ctx_mtp != nullptr) {
+            impl_->n_embd = static_cast<uint32_t>(embd_out);
+            impl_->llama_set_embeddings_nextn(impl_->ctx, true, false);
+            // Set masked=false on ctx_mtp so fused [start_pos .. N] batches (where only p==N has logits=1)
+            // store all batch token rows densely in embd_nextn, allowing exact indexing of row (count - 1).
+            impl_->llama_set_embeddings_nextn(impl_->ctx_mtp, true, false);
+            impl_->mtp_synced_len = 0;
+            impl_->telemetry.embedded_mtp_loaded = true;
+            impl_->telemetry.external_mtp_loaded = external;
+        } else if (impl_->mtp_sampler_chain != nullptr && impl_->llama_sampler_free != nullptr) {
+            impl_->llama_sampler_free(impl_->mtp_sampler_chain);
+            impl_->mtp_sampler_chain = nullptr;
+        }
+    };
+
+    const bool mtp_fns_ok =
+        impl_->telemetry.abi_canary_verified &&
+        (impl_->llama_model_n_layer_nextn != nullptr) &&
+        (impl_->llama_model_n_embd_out != nullptr) &&
+        (impl_->llama_set_embeddings_nextn != nullptr) &&
+        (impl_->llama_get_embeddings_nextn != nullptr) &&
+        (impl_->llama_get_embeddings_nextn_ith != nullptr);
+
+    if (can_load_mtp && impl_->llama_model_n_layer_nextn(impl_->model) > 0) {
+        init_mtp_context(impl_->model, /*external=*/false);
+    }
+    if (impl_->ctx_mtp == nullptr && mtp_fns_ok && !opts.mtp_model_path.empty() &&
+        std::filesystem::exists(opts.mtp_model_path) && impl_->llama_model_free != nullptr) {
+        LlamaModelParamsOpaque mparams_mtp = impl_->llama_model_default_params();
+        SIXI_MODEL_SET(mparams_mtp, n_gpu_layers, opts.n_gpu_layers);
+        SIXI_MODEL_SET(mparams_mtp, load_mtp, true);
+        impl_->model_mtp = impl_->llama_model_load_from_file(opts.mtp_model_path.c_str(), mparams_mtp);
+        if (impl_->model_mtp == nullptr) {
+            std::fprintf(stderr, "sixi-asi: failed to load external MTP head %s; drafter disabled\n",
+                         opts.mtp_model_path.c_str());
+        } else if (impl_->llama_model_n_layer_nextn(impl_->model_mtp) <= 0) {
+            std::fprintf(stderr, "sixi-asi: %s has no NextN layer; drafter disabled\n", opts.mtp_model_path.c_str());
+            impl_->llama_model_free(impl_->model_mtp);
+            impl_->model_mtp = nullptr;
+        } else {
+            init_mtp_context(impl_->model_mtp, /*external=*/true);
+            if (impl_->ctx_mtp == nullptr) {
+                impl_->llama_model_free(impl_->model_mtp);
+                impl_->model_mtp = nullptr;
             }
         }
     }
@@ -2061,6 +2208,11 @@ Status LlamaCppBackend::load_model(const LoadOptions& opts) {
                     impl_->dflash_target_layer_ids_n = n_ids;
                     impl_->n_embd_dflash_dec = static_cast<uint32_t>(impl_->llama_model_n_embd(impl_->model_dflash));
                     impl_->n_embd_dflash_enc = n_ids * impl_->n_embd_tgt;
+                    if (impl_->llama_model_rope_type != nullptr) {
+                        // GGML_ROPE_TYPE_MROPE = 8, GGML_ROPE_TYPE_IMROPE = 40 (ggml.h); llama_hparams::n_pos_per_embd()
+                        const int32_t rt = impl_->llama_model_rope_type(impl_->model_dflash);
+                        impl_->dflash_n_pos_per_embd = (rt == 8 || rt == 40) ? 4u : 1u;
+                    }
                     impl_->dflash_mask_token_id = impl_->llama_vocab_mask(
                         impl_->llama_model_get_vocab(impl_->model_dflash));
                     {
@@ -2080,6 +2232,21 @@ Status LlamaCppBackend::load_model(const LoadOptions& opts) {
                     impl_->dflash_selector_top_k = (impl_->llama_model_dflash_selector_top_k != nullptr)
                         ? impl_->llama_model_dflash_selector_top_k(impl_->model_dflash) : 0;
                     impl_->dflash_is_v2 = impl_->dflash_selector_top_k > 0;
+                    // DSpark (Markov + confidence head, written by the DSpark converter): the head predicts from the
+                    // anchor row on, so one block of block_size rows yields block_size drafts (upstream draft-dspark).
+                    {
+                        char conf_buf[16] = {};
+                        char anchor_buf[16] = {};
+                        const bool is_dspark = impl_->llama_model_meta_val_str != nullptr &&
+                            impl_->llama_model_meta_val_str(impl_->model_dflash, "dflash.has_confidence_head", conf_buf, sizeof(conf_buf)) >= 0;
+                        if (is_dspark && !impl_->dflash_is_v2) {
+                            const bool anchor = impl_->llama_model_meta_val_str(impl_->model_dflash, "dflash.sample_from_anchor",
+                                                                                 anchor_buf, sizeof(anchor_buf)) < 0 ||
+                                                std::strcmp(anchor_buf, "true") == 0;
+                            impl_->dflash_anchor_first = anchor;
+                            impl_->dflash_has_conf = std::strcmp(conf_buf, "true") == 0;
+                        }
+                    }
                     impl_->dflash_fused_inject = (impl_->llama_model_dflash_selector_top_k != nullptr);
                     bool dflash_causal = false;
                     char causal_buf[16] = {};
@@ -2090,6 +2257,10 @@ Status LlamaCppBackend::load_model(const LoadOptions& opts) {
                     impl_->llama_set_embeddings_nextn(impl_->ctx_dflash, true, !impl_->dflash_is_v2);
                     impl_->llama_set_causal_attn(impl_->ctx_dflash, dflash_causal);
                     impl_->telemetry.dflash2_drafter_loaded = true;
+                    if (impl_->dflash_anchor_first) {
+                        std::fprintf(stderr, "sixi-asi: DSpark drafter (anchor-first, block %d -> up to %d drafts, confidence head %s)\n",
+                                     impl_->dflash_block_size, impl_->dflash_max_drafts(), impl_->dflash_has_conf ? "yes" : "no");
+                    }
                 }
             }
         }
@@ -2614,6 +2785,10 @@ Result<std::vector<float>> LlamaCppBackend::forward_tokens(
         }
         const double step_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
         impl_->observe_step_timing(step_ms, count);
+        if (Impl::trace_prefill()) {
+            std::fprintf(stderr, "sixi-asi: prefill chunk pos=%zu n=%d last=%d launch_ms=%.1f (llama_decode returns before the GPU finishes)\n",
+                         pos_before, count, is_last_chunk ? 1 : 0, step_ms);
+        }
 
         impl_->history_tokens.insert(
             impl_->history_tokens.end(),
@@ -2726,6 +2901,10 @@ Result<std::vector<std::vector<float>>> LlamaCppBackend::forward_sequence_all_lo
         }
         const double step_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
         impl_->observe_step_timing(step_ms, count);
+        if (Impl::trace_prefill()) {
+            std::fprintf(stderr, "sixi-asi: prefill chunk pos=%zu n=%d last=%d launch_ms=%.1f (llama_decode returns before the GPU finishes)\n",
+                         pos_before, count, -1, step_ms);
+        }
 
         impl_->history_tokens.insert(
             impl_->history_tokens.end(),
@@ -2834,6 +3013,10 @@ Result<int32_t> LlamaCppBackend::forward_tokens_greedy(
         }
         const double step_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
         impl_->observe_step_timing(step_ms, count);
+        if (Impl::trace_prefill()) {
+            std::fprintf(stderr, "sixi-asi: prefill chunk pos=%zu n=%d last=%d launch_ms=%.1f (llama_decode returns before the GPU finishes)\n",
+                         pos_before, count, is_last_chunk ? 1 : 0, step_ms);
+        }
 
         impl_->history_tokens.insert(
             impl_->history_tokens.end(),
@@ -2890,6 +3073,10 @@ Result<std::vector<int32_t>> LlamaCppBackend::forward_sequence_greedy_argmax(
         }
         const double step_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
         impl_->observe_step_timing(step_ms, count);
+        if (Impl::trace_prefill()) {
+            std::fprintf(stderr, "sixi-asi: prefill chunk pos=%zu n=%d last=%d launch_ms=%.1f (llama_decode returns before the GPU finishes)\n",
+                         pos_before, count, -1, step_ms);
+        }
 
         impl_->history_tokens.insert(
             impl_->history_tokens.end(),
@@ -2978,12 +3165,39 @@ uint32_t LlamaCppBackend::preferred_draft_k() const noexcept {
     // tokens sequentially, so the optimum is short drafts even for a block drafter: DFlash2 k=3 (19-23 tok/s)
     // beats k=7 (13-20 tok/s); chained MTP k=2..4 within noise, k>=5 slower (each draft = MTP decode + lm_head).
     if (impl_->ctx_dflash != nullptr) {
-        return static_cast<uint32_t>(std::min(3, std::max(1, impl_->dflash_block_size - 1)));
+        return static_cast<uint32_t>(std::min(3, std::max(1, impl_->dflash_max_drafts())));
     }
     if (impl_->ctx_mtp != nullptr && impl_->n_embd > 0) {
         return 3u;
     }
     return 0;
+}
+
+uint32_t LlamaCppBackend::max_useful_draft_k() const noexcept {
+    if (!is_loaded()) {
+        return 0;
+    }
+    if (impl_->ctx_dflash != nullptr) {
+        return static_cast<uint32_t>(std::max(1, impl_->dflash_max_drafts()));   // DFlash2: 7, DSpine b16: 15, DSpark: 7
+    }
+    if (impl_->ctx_mtp != nullptr && impl_->n_embd > 0) {
+        return 4u;   // chained MTP: k=2..4 within noise, k>=5 slower (measured 2026-11-08)
+    }
+    return 0;
+}
+
+std::pair<uint32_t, uint32_t> LlamaCppBackend::slow_draft_k_band() const noexcept {
+    // Verify batch = k+1 rows. Upstream llama.cpp routes <= 8 rows to MMVQ (cost grows ~25 ms per row past 5 rows on
+    // Thor) and >= 9 rows to MMQ (flat), so k = 5..7 is strictly worse than k = 4 or k = 8: band {5, 7}.
+    // SIXI_SKIP_K_BAND="lo,hi" overrides; hi < lo means "no skipped k, flat cost from k = lo" (the flat-band policy
+    // then sits at max k and drops to lo - 1 on poor acceptance).
+    static const std::pair<uint32_t, uint32_t> band = [] {
+        const char* e = std::getenv("SIXI_SKIP_K_BAND");
+        unsigned lo = 5u, hi = 7u;
+        if (e != nullptr && std::sscanf(e, "%u,%u", &lo, &hi) != 2) { lo = 5u; hi = 7u; }
+        return std::pair<uint32_t, uint32_t>{lo, hi};
+    }();
+    return band;
 }
 
 Result<std::vector<int32_t>> LlamaCppBackend::draft_embedded_mtp(int32_t first_token, uint32_t k) {
@@ -3005,9 +3219,11 @@ Result<std::vector<int32_t>> LlamaCppBackend::draft_embedded_mtp(int32_t first_t
                 ErrorCode::StateInvalidated,
                 "DFlash draft KV covers " + std::to_string(impl_->dflash_synced_len) + " of " + std::to_string(N) + " target positions");
         }
-        const uint32_t max_dft = static_cast<uint32_t>(std::max(1, impl_->dflash_block_size - 1));
+        const uint32_t max_dft = static_cast<uint32_t>(std::max(1, impl_->dflash_max_drafts()));
         const uint32_t n_draft = std::min(k, max_dft);
-        const int32_t n_block_tokens = static_cast<int32_t>(n_draft + 1u);
+        const bool anchor_first = impl_->dflash_anchor_first;
+        const int32_t n_block_tokens = static_cast<int32_t>(anchor_first ? n_draft : n_draft + 1u);
+        const int32_t i_draft_beg = anchor_first ? 0 : 1;
 
         std::vector<int32_t> blk_tokens(static_cast<size_t>(n_block_tokens));
         std::vector<int32_t> blk_pos(static_cast<size_t>(n_block_tokens));
@@ -3067,7 +3283,18 @@ Result<std::vector<int32_t>> LlamaCppBackend::draft_embedded_mtp(int32_t first_t
             const uint64_t dft_vocab = (impl_->n_vocab_dflash > 0)
                 ? std::min<uint64_t>(impl_->n_vocab_dflash, impl_->n_vocab)
                 : impl_->n_vocab;
-            for (int32_t i = 1; i < n_block_tokens; ++i) {
+            // DSpark confidence head: stop the draft at the first row whose acceptance estimate is below p_min
+            // (SIXI_DSPARK_P_MIN, default 0 = off, as upstream --spec-draft-p-min)
+            static const float p_min = [] {
+                const char* e = std::getenv("SIXI_DSPARK_P_MIN");
+                return (e != nullptr && *e != '\0') ? std::strtof(e, nullptr) : 0.0f;
+            }();
+            const float* conf = (anchor_first && impl_->dflash_has_conf && p_min > 0.0f)
+                ? impl_->llama_get_embeddings_nextn(impl_->ctx_dflash) : nullptr;
+            for (int32_t i = i_draft_beg; i < n_block_tokens; ++i) {
+                if (conf != nullptr && conf[static_cast<size_t>(i) * impl_->n_embd_dflash_dec] < p_min) {
+                    break;
+                }
                 const float* logits_i = impl_->llama_get_logits_ith(impl_->ctx_dflash, i);
                 if (logits_i == nullptr) {
                     break;
@@ -3076,6 +3303,11 @@ Result<std::vector<int32_t>> LlamaCppBackend::draft_embedded_mtp(int32_t first_t
             }
         }
 
+        if (Impl::trace_prefill()) {
+            std::fprintf(stderr, "sixi-asi: dflash draft N=%zu first=%d k=%u ->", N, first_token, n_draft);
+            for (int32_t t : drafted) std::fprintf(stderr, " %d", t);
+            std::fprintf(stderr, "\n");
+        }
         void* mem_dflash = impl_->llama_get_memory(impl_->ctx_dflash);
         if (mem_dflash != nullptr && impl_->llama_memory_seq_rm != nullptr) {
             (void)impl_->llama_memory_seq_rm(mem_dflash, 0, static_cast<int32_t>(N), -1);

@@ -1,0 +1,202 @@
+{
+ "engines": {
+  "title": "Qwen3.8-27B on NVIDIA Jetson AGX Thor: decode speed",
+  "subtitle": "Same 5 prompts, 256 generated tokens, greedy, thinking on, batch 1, MAXN. Mean of 5 tasks.",
+  "rows": [
+   {
+    "label": "sixi-asi 0.9 · DSpine drafter (Q4_K_M)",
+    "tok_s": 45.3,
+    "group": "sixi",
+    "bold": true
+   },
+   {
+    "label": "TensorRT Edge-LLM 0.11 · DFlash2 (NVFP4)",
+    "tok_s": 45.4,
+    "group": "other"
+   },
+   {
+    "label": "llama-server · DSpine (same library)",
+    "tok_s": 43.7,
+    "group": "other"
+   },
+   {
+    "label": "sixi-asi 0.9 · DFlash2 drafter",
+    "tok_s": 41.4,
+    "group": "sixi"
+   },
+   {
+    "label": "sixi-asi 0.9 · DSpark drafter",
+    "tok_s": 37.2,
+    "group": "sixi"
+   },
+   {
+    "label": "TensorRT Edge-LLM 0.11 · DSpark (NVFP4)",
+    "tok_s": 36.1,
+    "group": "other"
+   },
+   {
+    "label": "sixi-asi 0.8 · DFlash2 drafter",
+    "tok_s": 23.2,
+    "group": "sixi"
+   },
+   {
+    "label": "llama-server · autoregressive",
+    "tok_s": 11.9,
+    "group": "other"
+   }
+  ]
+ },
+ "verify-cost": {
+  "title": "Cost of one verify pass vs draft length",
+  "subtitle": "llama-bench, one forward of N rows, Qwen3.8-27B Q4_K_M, Thor MAXN. Lower is better.",
+  "y_max": 180,
+  "floor_ms": 58,
+  "floor_label": "weight-read floor ≈ 58 ms",
+  "series": [
+   {
+    "legend": "upstream llama.cpp",
+    "label": "upstream",
+    "color": "orange",
+    "points": [
+     [
+      1,
+      84.9
+     ],
+     [
+      2,
+      83.7
+     ],
+     [
+      3,
+      93.0
+     ],
+     [
+      4,
+      108.1
+     ],
+     [
+      5,
+      112.0
+     ],
+     [
+      6,
+      129.8
+     ],
+     [
+      7,
+      147.7
+     ],
+     [
+      8,
+      163.4
+     ],
+     [
+      9,
+      113.3
+     ],
+     [
+      12,
+      114.7
+     ],
+     [
+      16,
+      115.7
+     ]
+    ],
+    "callouts": [
+     [
+      8,
+      163.4,
+      -12
+     ]
+    ]
+   },
+   {
+    "legend": "with patch 0003",
+    "label": "patch 0003",
+    "color": "blue",
+    "points": [
+     [
+      1,
+      84.9
+     ],
+     [
+      2,
+      83.8
+     ],
+     [
+      3,
+      93.1
+     ],
+     [
+      4,
+      86.6
+     ],
+     [
+      5,
+      87.0
+     ],
+     [
+      6,
+      87.2
+     ],
+     [
+      7,
+      87.9
+     ],
+     [
+      8,
+      88.0
+     ],
+     [
+      9,
+      91.7
+     ],
+     [
+      12,
+      92.0
+     ],
+     [
+      16,
+      93.5
+     ]
+    ],
+    "callouts": [
+     [
+      8,
+      88.0,
+      24
+     ]
+    ]
+   }
+  ]
+ },
+ "long-context": {
+  "title": "Time to first token for the next question about the same document",
+  "subtitle": "sixi-asi, DSpine, Q4_K_M, --ctx 65536. The document stays, only the question changes.",
+  "before_label": "full re-prefill",
+  "after_label": "tail checkpoints (0.9)",
+  "rows": [
+   {
+    "label": "4k-token document",
+    "before_s": 11.4,
+    "after_s": 0.65
+   },
+   {
+    "label": "17k tokens",
+    "before_s": 49.6,
+    "after_s": 0.75
+   },
+   {
+    "label": "36k tokens",
+    "before_s": 110,
+    "after_s": 0.86
+   },
+   {
+    "label": "63k tokens",
+    "before_s": 209,
+    "after_s": 1.0
+   }
+  ]
+ }
+}

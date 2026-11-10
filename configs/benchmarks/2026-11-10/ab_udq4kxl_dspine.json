@@ -1,0 +1,177 @@
+{
+  "max_tokens": 256,
+  "repeats": 3,
+  "temperature": 0.0,
+  "engines": {
+    "sixi-dspine-udxl": "http://127.0.0.1:8091"
+  },
+  "raw_engines": {},
+  "merged_from": null,
+  "tasks": [
+    {
+      "name": "GSM8K-Math",
+      "engines": {
+        "sixi-dspine-udxl": {
+          "runs_decode_tok_s": [
+            33.814149526202876,
+            34.183326185600855,
+            34.252505603033555
+          ],
+          "runs_ttft_s": [
+            0.5867498139996314,
+            0.002898596998420544,
+            0.0029318469896679744
+          ],
+          "decode_tok_s_median": 34.183326185600855,
+          "decode_tok_s_mean": 34.08332710494576,
+          "decode_tok_s_stdev": 0.19242119533719768,
+          "ttft_s_median": 0.0029318469896679744,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": {
+            "decode_tok_per_s": 33.94694143231951,
+            "mean_acceptance_length": 4.607142857142857,
+            "prefill_ms": 584.659153,
+            "snapshot_ms": 0.484274,
+            "tpot_ms": 29.457734859375,
+            "ttft_ms": 585.143519
+          },
+          "text": "We need answer arithmetic. Need compute total energy consumption kWh over 5 hours. Data center 4 racks *12 nodes =48 nodes. 75% peak: 0.75*48=36 nodes. 25% idle:12 nodes. Peak 850W, idle 250W. Total power =36*850 +12*250 =30600+3000=33600 W =33.6 kW. Over 5h =168 kWh. Need show arithmetic and end with exact number. Ensure final ends with exact number maybe \"168 kWh\" or just 168? User: end with the exact number. Could end with 168 kWh? \"exact number\" maybe 168. To be safe final line: 168 kWh. But if they say exact number maybe no units? They ask total energy consumption in kWh, so exact number is 168. End with exact number. Could final sentence: Total energy consumption: 168 kWh. That ends with kWh not number. If strict end with exact number, final character should be\u241e",
+          "repeat_identical": true
+        }
+      }
+    },
+    {
+      "name": "HumanEval-Code",
+      "engines": {
+        "sixi-dspine-udxl": {
+          "runs_decode_tok_s": [
+            27.723846265590286,
+            27.623891849848125,
+            27.690739097380185
+          ],
+          "runs_ttft_s": [
+            0.44140207300370093,
+            0.003300323005532846,
+            0.00265796399617102
+          ],
+          "decode_tok_s_median": 27.690739097380185,
+          "decode_tok_s_mean": 27.679492404272864,
+          "decode_tok_s_stdev": 0.041573929218336365,
+          "ttft_s_median": 0.003300323005532846,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": {
+            "decode_tok_per_s": 27.831214077231426,
+            "mean_acceptance_length": 3.4594594594594597,
+            "prefill_ms": 439.02489,
+            "snapshot_ms": 0.470875,
+            "tpot_ms": 35.9308795234375,
+            "ttft_ms": 439.495848
+          },
+          "text": "We need answer user: \"Write a clean, self-contained C++20 function `uint64_t prefix_xor_max(std::span<const uint64_t> arr)` that computes the maximum XOR of any prefix of `arr`. Include headers and a short complexity comment.\"\n\nNeed produce final code. Need think about semantics: maximum XOR of any prefix of arr. Prefix XORs: x0? Usually prefix of arr could be empty? \"any prefix\" maybe non-empty? Need decide. Function returns uint64_t. If arr empty? Need handle. Could return 0 for empty (empty prefix XOR 0) or maybe 0. Clean self-contained C++20. Include <cstdint>, <span>, maybe <algorithm>? We can just loop.\n\nCompute maximum XOR of any prefix: maintain running xor, max. For each element: running ^= element; if running > max max=running. Initialize max=0. This includes empty prefix (0). If non-empty only and arr nonempty, same if all prefix xors negative? uint64_t unsigned, 0 may be max if all prefix xors? If non-empty and all prefix xors less than 0 impossible; 0 could be greater than some? unsigned\u241e",
+          "repeat_identical": true
+        }
+      }
+    },
+    {
+      "name": "MT-Bench-JSON",
+      "engines": {
+        "sixi-dspine-udxl": {
+          "runs_decode_tok_s": [
+            57.50854896372023,
+            57.695180984761855,
+            57.71774939610996
+          ],
+          "runs_ttft_s": [
+            0.4612652590003563,
+            0.0035533339978428558,
+            0.003702410002006218
+          ],
+          "decode_tok_s_median": 57.695180984761855,
+          "decode_tok_s_mean": 57.640493114864015,
+          "decode_tok_s_stdev": 0.09375243130530778,
+          "ttft_s_median": 0.003702410002006218,
+          "completion_tokens": 234,
+          "finish_reason": "stop",
+          "metrics": {
+            "decode_tok_per_s": 57.752078231302804,
+            "mean_acceptance_length": 8.10344827586207,
+            "prefill_ms": 458.708111,
+            "snapshot_ms": 0.492793,
+            "tpot_ms": 17.315394192307693,
+            "ttft_ms": 459.200978
+          },
+          "text": "We need to respond to user: \"Output ONLY a valid JSON object describing a hypothetical inference engine with keys: \"engine\" (string), \"target_models\" (array of 2 strings), \"state_dtype\" (string), \"max_vram_gib\" (number), and \"speculative_decoders\" (array of strings).\"\n\nNeed output only valid JSON object. No extra. Ensure keys exactly. target_models array of 2 strings. speculative_decoders array of strings (could be empty? likely array of strings, maybe at least one? It says array of strings, no count. Could include one or more. max_vram_gib number. state_dtype string. engine string.\n\nNeed final only JSON. Ensure valid.\n\u241e{\n  \"engine\": \"HypotheticalInferenceEngine\",\n  \"target_models\": [\n    \"model-a\",\n    \"model-b\"\n  ],\n  \"state_dtype\": \"float16\",\n  \"max_vram_gib\": 80,\n  \"speculative_decoders\": [\n    \"draft-model\"\n  ]\n}",
+          "repeat_identical": true
+        }
+      }
+    },
+    {
+      "name": "RAG-Code-Refactor",
+      "engines": {
+        "sixi-dspine-udxl": {
+          "runs_decode_tok_s": [
+            40.94314244045374,
+            40.91663155550639,
+            41.05706653121794
+          ],
+          "runs_ttft_s": [
+            0.9196093079954153,
+            0.0035008790000574663,
+            0.004679234989453107
+          ],
+          "decode_tok_s_median": 40.94314244045374,
+          "decode_tok_s_mean": 40.97228017572603,
+          "decode_tok_s_stdev": 0.06092208856878408,
+          "ttft_s_median": 0.004679234989453107,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": {
+            "decode_tok_per_s": 41.10352644453778,
+            "mean_acceptance_length": 5.733333333333333,
+            "prefill_ms": 916.85789,
+            "snapshot_ms": 0.555515,
+            "tpot_ms": 24.32881279296875,
+            "ttft_ms": 917.413479
+          },
+          "text": "We need answer user's request. Need produce final with refactored struct. Need add noexcept to every method and change float to double, keeping all names and comments identical. There are no comments. Need likely change float min_latency_ms to double, max to double, record_request parameter float latency_ms to double latency_ms? \"changing float to double\" likely all float types. Also literals 0.0f to 0.0? Since float to double, should use 0.0 maybe. Keep names identical. Add noexcept to methods: void record_request(uint64_t tokens, double latency_ms) noexcept { ... } void reset_counters() noexcept { ... }. Need ensure min_latency_ms initial 0.0. Could include code block only. Need maybe mention? final concise.\n\u241e```cpp\nstruct TelemetryCounter {\n    uint64_t total_requests = 0;\n    uint64_t total_tokens = 0;\n    double min_latency_ms = 0.0;\n    double max_latency_ms = 0.0;\n    void record_request(uint64_t tokens, double latency_ms) noexcept {\n        total_requests += 1;\n        total_tokens += tokens;\n        if (lat",
+          "repeat_identical": true
+        }
+      }
+    },
+    {
+      "name": "Arch-Systems-TG",
+      "engines": {
+        "sixi-dspine-udxl": {
+          "runs_decode_tok_s": [
+            32.598595656843116,
+            32.49097028442756,
+            32.39430328886766
+          ],
+          "runs_ttft_s": [
+            0.4189713460073108,
+            0.003728711002622731,
+            0.0030837369995424524
+          ],
+          "decode_tok_s_median": 32.49097028442756,
+          "decode_tok_s_mean": 32.49462307671278,
+          "decode_tok_s_stdev": 0.08344199610853001,
+          "ttft_s_median": 0.003728711002622731,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": {
+            "decode_tok_per_s": 32.72570493450919,
+            "mean_acceptance_length": 4.145161290322581,
+            "prefill_ms": 416.771932,
+            "snapshot_ms": 0.516471,
+            "tpot_ms": 30.5570193828125,
+            "ttft_ms": 417.288486
+          },
+          "text": "We need answer user: \"Explain in 4 concise bullet points why hybrid Gated DeltaNet (linear recurrent state) + full-attention models need O(1) state checkpointing during speculative decoding compared to standard Transformer KV caches.\"\n\nNeed produce 4 concise bullets. Need understand technical context. Hybrid Gated DeltaNet + full attention. Gated DeltaNet is linear attention / linear recurrent state? It maintains recurrent state (matrix) updated per token, maybe O(d^2) state independent of sequence length. Full attention layers have KV cache growing O(L). Speculative decoding: draft model proposes tokens, target verifies; if rejected, need rollback to previous state. Standard Transformer KV caches: can checkpoint by saving KV cache at branch point? But KV cache size O(L) per checkpoint, or can use prefix caching? Need O(1) state checkpointing? Let's parse.\n\nQuestion: \"why hybrid Gated DeltaNet (linear recurrent state) + full-attention models need O(1) state checkpointing during speculative decoding compared to standard Transformer KV caches.\" It asks explain in 4 concise bullet points why hybrid models need O(1) state checkpointing during speculative decoding compared to standard Transformer KV caches.\n\nMaybe they mean: In hybrid models\u241e",
+          "repeat_identical": true
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,541 @@
+{
+  "config": {
+    "engines": "edgellm-dflash2=http://127.0.0.1:8000@RadixArk/Qwen3.8-27B-NVFP4",
+    "tasks": "gsm8k,humaneval",
+    "n_gsm": 30,
+    "n_he": 20,
+    "seed": 1234,
+    "max_tokens": 8192,
+    "temperature": 0.0,
+    "effort": "low",
+    "out": "intel_edgellm.json"
+  },
+  "engines": {
+    "edgellm-dflash2": {
+      "tasks": {
+        "gsm8k": {
+          "n": 30,
+          "correct": 28,
+          "accuracy": 0.9333333333333333,
+          "mean_reasoning_tokens": 130.73333333333332,
+          "mean_completion_tokens": 333.3,
+          "mean_wall_s": 5.577184275366502,
+          "tok_s": 59.76133897388524,
+          "details": [
+            {
+              "i": 0,
+              "ok": true,
+              "pred": "480",
+              "gold": "480",
+              "finish": "stop",
+              "reasoning_tokens": 85,
+              "completion_tokens": 232,
+              "wall_s": 4.24
+            },
+            {
+              "i": 1,
+              "ok": true,
+              "pred": "29",
+              "gold": "29",
+              "finish": "stop",
+              "reasoning_tokens": 119,
+              "completion_tokens": 320,
+              "wall_s": 5.05
+            },
+            {
+              "i": 2,
+              "ok": true,
+              "pred": "50",
+              "gold": "50",
+              "finish": "stop",
+              "reasoning_tokens": 64,
+              "completion_tokens": 197,
+              "wall_s": 3.6
+            },
+            {
+              "i": 3,
+              "ok": true,
+              "pred": "2100",
+              "gold": "2100",
+              "finish": "stop",
+              "reasoning_tokens": 97,
+              "completion_tokens": 314,
+              "wall_s": 5.03
+            },
+            {
+              "i": 4,
+              "ok": true,
+              "pred": "43500",
+              "gold": "43500",
+              "finish": "stop",
+              "reasoning_tokens": 634,
+              "completion_tokens": 903,
+              "wall_s": 16.65
+            },
+            {
+              "i": 5,
+              "ok": true,
+              "pred": "31",
+              "gold": "31",
+              "finish": "stop",
+              "reasoning_tokens": 142,
+              "completion_tokens": 367,
+              "wall_s": 5.75
+            },
+            {
+              "i": 6,
+              "ok": true,
+              "pred": "240",
+              "gold": "240",
+              "finish": "stop",
+              "reasoning_tokens": 106,
+              "completion_tokens": 222,
+              "wall_s": 4.21
+            },
+            {
+              "i": 7,
+              "ok": true,
+              "pred": "5",
+              "gold": "5",
+              "finish": "stop",
+              "reasoning_tokens": 74,
+              "completion_tokens": 194,
+              "wall_s": 3.09
+            },
+            {
+              "i": 8,
+              "ok": true,
+              "pred": "20",
+              "gold": "20",
+              "finish": "stop",
+              "reasoning_tokens": 114,
+              "completion_tokens": 351,
+              "wall_s": 5.54
+            },
+            {
+              "i": 9,
+              "ok": true,
+              "pred": "130000",
+              "gold": "130000",
+              "finish": "stop",
+              "reasoning_tokens": 60,
+              "completion_tokens": 206,
+              "wall_s": 3.8
+            },
+            {
+              "i": 10,
+              "ok": true,
+              "pred": "80",
+              "gold": "80",
+              "finish": "stop",
+              "reasoning_tokens": 45,
+              "completion_tokens": 189,
+              "wall_s": 2.98
+            },
+            {
+              "i": 11,
+              "ok": true,
+              "pred": "8",
+              "gold": "8",
+              "finish": "stop",
+              "reasoning_tokens": 226,
+              "completion_tokens": 370,
+              "wall_s": 6.85
+            },
+            {
+              "i": 12,
+              "ok": true,
+              "pred": "48",
+              "gold": "48",
+              "finish": "stop",
+              "reasoning_tokens": 147,
+              "completion_tokens": 370,
+              "wall_s": 6.45
+            },
+            {
+              "i": 13,
+              "ok": true,
+              "pred": "296",
+              "gold": "296",
+              "finish": "stop",
+              "reasoning_tokens": 86,
+              "completion_tokens": 278,
+              "wall_s": 4.62
+            },
+            {
+              "i": 14,
+              "ok": true,
+              "pred": "15",
+              "gold": "15",
+              "finish": "stop",
+              "reasoning_tokens": 47,
+              "completion_tokens": 251,
+              "wall_s": 4.0
+            },
+            {
+              "i": 15,
+              "ok": true,
+              "pred": "800",
+              "gold": "800",
+              "finish": "stop",
+              "reasoning_tokens": 108,
+              "completion_tokens": 362,
+              "wall_s": 5.33
+            },
+            {
+              "i": 16,
+              "ok": false,
+              "pred": "44",
+              "gold": "104",
+              "finish": "stop",
+              "reasoning_tokens": 616,
+              "completion_tokens": 1045,
+              "wall_s": 19.31
+            },
+            {
+              "i": 17,
+              "ok": true,
+              "pred": "1",
+              "gold": "1",
+              "finish": "stop",
+              "reasoning_tokens": 112,
+              "completion_tokens": 291,
+              "wall_s": 4.53
+            },
+            {
+              "i": 18,
+              "ok": true,
+              "pred": "2",
+              "gold": "2",
+              "finish": "stop",
+              "reasoning_tokens": 101,
+              "completion_tokens": 287,
+              "wall_s": 4.32
+            },
+            {
+              "i": 19,
+              "ok": true,
+              "pred": "11",
+              "gold": "11",
+              "finish": "stop",
+              "reasoning_tokens": 62,
+              "completion_tokens": 212,
+              "wall_s": 3.2
+            },
+            {
+              "i": 20,
+              "ok": true,
+              "pred": "54",
+              "gold": "54",
+              "finish": "stop",
+              "reasoning_tokens": 92,
+              "completion_tokens": 324,
+              "wall_s": 5.33
+            },
+            {
+              "i": 21,
+              "ok": true,
+              "pred": "5",
+              "gold": "5",
+              "finish": "stop",
+              "reasoning_tokens": 116,
+              "completion_tokens": 469,
+              "wall_s": 7.68
+            },
+            {
+              "i": 22,
+              "ok": true,
+              "pred": "27",
+              "gold": "27",
+              "finish": "stop",
+              "reasoning_tokens": 74,
+              "completion_tokens": 183,
+              "wall_s": 2.78
+            },
+            {
+              "i": 23,
+              "ok": true,
+              "pred": "96",
+              "gold": "96",
+              "finish": "stop",
+              "reasoning_tokens": 102,
+              "completion_tokens": 342,
+              "wall_s": 5.54
+            },
+            {
+              "i": 24,
+              "ok": true,
+              "pred": "90",
+              "gold": "90",
+              "finish": "stop",
+              "reasoning_tokens": 58,
+              "completion_tokens": 175,
+              "wall_s": 3.19
+            },
+            {
+              "i": 25,
+              "ok": false,
+              "pred": "1800",
+              "gold": "360",
+              "finish": "stop",
+              "reasoning_tokens": 119,
+              "completion_tokens": 369,
+              "wall_s": 5.95
+            },
+            {
+              "i": 26,
+              "ok": true,
+              "pred": "30",
+              "gold": "30",
+              "finish": "stop",
+              "reasoning_tokens": 76,
+              "completion_tokens": 366,
+              "wall_s": 5.65
+            },
+            {
+              "i": 27,
+              "ok": true,
+              "pred": "15",
+              "gold": "15",
+              "finish": "stop",
+              "reasoning_tokens": 55,
+              "completion_tokens": 188,
+              "wall_s": 3.09
+            },
+            {
+              "i": 28,
+              "ok": true,
+              "pred": "3",
+              "gold": "3",
+              "finish": "stop",
+              "reasoning_tokens": 121,
+              "completion_tokens": 463,
+              "wall_s": 6.97
+            },
+            {
+              "i": 29,
+              "ok": true,
+              "pred": "6",
+              "gold": "6",
+              "finish": "stop",
+              "reasoning_tokens": 64,
+              "completion_tokens": 159,
+              "wall_s": 2.58
+            }
+          ]
+        },
+        "humaneval": {
+          "n": 20,
+          "passed": 19,
+          "pass_at_1": 0.95,
+          "mean_reasoning_tokens": 378.45,
+          "mean_completion_tokens": 757.1,
+          "mean_wall_s": 11.98188910845056,
+          "tok_s": 63.18703112233231,
+          "details": [
+            {
+              "i": 0,
+              "task_id": "HumanEval/82",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 240,
+              "completion_tokens": 462,
+              "wall_s": 6.46
+            },
+            {
+              "i": 1,
+              "task_id": "HumanEval/115",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 322,
+              "completion_tokens": 886,
+              "wall_s": 13.13
+            },
+            {
+              "i": 2,
+              "task_id": "HumanEval/92",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 432,
+              "completion_tokens": 754,
+              "wall_s": 12.49
+            },
+            {
+              "i": 3,
+              "task_id": "HumanEval/161",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 222,
+              "completion_tokens": 432,
+              "wall_s": 6.67
+            },
+            {
+              "i": 4,
+              "task_id": "HumanEval/47",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 411,
+              "completion_tokens": 721,
+              "wall_s": 11.47
+            },
+            {
+              "i": 5,
+              "task_id": "HumanEval/51",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 164,
+              "completion_tokens": 403,
+              "wall_s": 6.17
+            },
+            {
+              "i": 6,
+              "task_id": "HumanEval/50",
+              "ok": false,
+              "err": "ost recent call last):\n  File \"/tmp/tmpzt8hd_28/prog.py\", line 28, in <module>\n    check(decode_shift)\n  File \"/tmp/tmpzt8hd_28/prog.py\", line 23, in check\n    encoded_str = encode_shift(str)\n                  ^^^^^^^^^^^^\nNameError: name 'encode_shift' is not defined. Did you mean: 'decode_shift'?\n",
+              "finish": "stop",
+              "reasoning_tokens": 123,
+              "completion_tokens": 221,
+              "wall_s": 3.92
+            },
+            {
+              "i": 7,
+              "task_id": "HumanEval/146",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 405,
+              "completion_tokens": 798,
+              "wall_s": 11.89
+            },
+            {
+              "i": 8,
+              "task_id": "HumanEval/36",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 520,
+              "completion_tokens": 1057,
+              "wall_s": 17.89
+            },
+            {
+              "i": 9,
+              "task_id": "HumanEval/109",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 568,
+              "completion_tokens": 1245,
+              "wall_s": 19.36
+            },
+            {
+              "i": 10,
+              "task_id": "HumanEval/81",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 585,
+              "completion_tokens": 1654,
+              "wall_s": 24.39
+            },
+            {
+              "i": 11,
+              "task_id": "HumanEval/30",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 104,
+              "completion_tokens": 308,
+              "wall_s": 4.53
+            },
+            {
+              "i": 12,
+              "task_id": "HumanEval/61",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 249,
+              "completion_tokens": 427,
+              "wall_s": 6.97
+            },
+            {
+              "i": 13,
+              "task_id": "HumanEval/105",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 350,
+              "completion_tokens": 674,
+              "wall_s": 9.65
+            },
+            {
+              "i": 14,
+              "task_id": "HumanEval/144",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 310,
+              "completion_tokens": 686,
+              "wall_s": 10.24
+            },
+            {
+              "i": 15,
+              "task_id": "HumanEval/95",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 585,
+              "completion_tokens": 946,
+              "wall_s": 14.64
+            },
+            {
+              "i": 16,
+              "task_id": "HumanEval/45",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 76,
+              "completion_tokens": 147,
+              "wall_s": 2.48
+            },
+            {
+              "i": 17,
+              "task_id": "HumanEval/87",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 415,
+              "completion_tokens": 913,
+              "wall_s": 14.96
+            },
+            {
+              "i": 18,
+              "task_id": "HumanEval/132",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 1043,
+              "completion_tokens": 1642,
+              "wall_s": 30.96
+            },
+            {
+              "i": 19,
+              "task_id": "HumanEval/158",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 445,
+              "completion_tokens": 766,
+              "wall_s": 11.36
+            }
+          ]
+        }
+      }
+    }
+  }
+}

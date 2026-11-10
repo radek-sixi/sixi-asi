@@ -250,6 +250,13 @@ public:
     // Draft length the embedded drafter is efficient at (0 = no opinion). DFlash2: block_size - 1 (one block pass
     // yields all drafts); chained single-layer MTP: 3 (each extra draft costs one MTP decode + lm_head).
     virtual uint32_t preferred_draft_k() const noexcept { return 0; }
+    // Largest draft length that still pays on this backend/drafter (0 = no opinion). Block drafters: block-1;
+    // chained MTP: 4 (every draft is an extra MTP decode plus the lm_head read).
+    virtual uint32_t max_useful_draft_k() const noexcept { return 0; }
+    // Draft lengths whose verify batch lands on the slow tail of the backend's small-batch matmul path (inclusive;
+    // {0,0} = none). llama.cpp on Thor: 6-8 rows run MMVQ at ~25 ms per extra row, >= 9 rows switch to MMQ
+    // (measured 2026-11-09: step 143 ms at k=4, 214 ms at k=7, 150 ms at k=8).
+    virtual std::pair<uint32_t, uint32_t> slow_draft_k_band() const noexcept { return {0u, 0u}; }
     virtual Result<std::vector<int32_t>> draft_embedded_mtp(int32_t first_token, uint32_t k) {
         (void)first_token;
         (void)k;
@@ -369,12 +376,13 @@ public:
     struct LoadOptions {
         std::string model_path;
         std::string draft_model_path; // Optional external DFlash2 / draft GGUF path (P2.4)
+        std::string mtp_model_path;   // Optional external MTP-head GGUF (e.g. mtp-Qwen3.8-Flash-Next-Q8_0.gguf) when the main GGUF has no NextN layer
         std::string ple_shard_path;   // Optional PLE/engram shard path for async PleTableManager prefetch (P0.2)
         PleDescriptor ple_desc{};     // Optional PLE descriptor
         int32_t n_gpu_layers = 999;
         uint32_t n_ctx = 4096;
-        uint32_t n_batch = 512;
-        uint32_t n_ubatch = 512;
+        uint32_t n_batch = 2048;
+        uint32_t n_ubatch = 2048;
         uint32_t n_threads = 8;
         bool use_mmap = true;
         bool use_mlock = false;
@@ -389,6 +397,7 @@ public:
         uint32_t n_rs_seq = 8;                         // Recurrent-state snapshot ring depth (max O(1) rollback = n_rs_seq tokens)
         uint32_t n_outputs_max = 16;                   // Max logits/sampler outputs per ubatch (>= 1 + max draft k)
         uint32_t device_snapshot_slots = 4;            // extra sequences for O(ms) device-side prefix snapshots (0 = off)
+        bool ple_on_device = false;                    // place per_layer_token_embd on the GPU buffer; needs a CUDA get_rows kernel for its quant type (iq4_nl), else the scheduler copies the 27 GB table to the host every graph
         int32_t kv_type_k = -1;                        // ggml type for the K cache (-1 = library default f16; 8 = q8_0, 2 = q4_0)
         int32_t kv_type_v = -1;                        // ggml type for the V cache (quantized V requires flash attention)
     };
@@ -398,6 +407,7 @@ public:
         bool cb_eval_enabled = false;
         bool dflash2_drafter_loaded = false;
         bool embedded_mtp_loaded = false;
+        bool external_mtp_loaded = false;      // the MTP draft context runs on a separate MTP-head GGUF (LoadOptions::mtp_model_path)
         uint64_t forward_steps = 0;
         uint64_t total_tokens_decoded = 0;
         uint64_t cuda_q8_1_fp32_blocks_quantized = 0;
@@ -421,6 +431,7 @@ public:
         uint64_t dflash_draft_unsynced = 0;    // drafts refused because the draft KV lagged the target
         uint64_t state_snapshots_taken = 0;
         uint64_t state_snapshots_restored = 0;
+        bool ple_override_applied = false;
         uint64_t device_snapshots_saved = 0;
         uint64_t device_snapshots_restored = 0;
         uint32_t device_snapshot_slot_count = 0;
@@ -472,6 +483,8 @@ public:
     Status rollback_to_position(uint64_t target_seq_len) override;
     bool has_embedded_mtp_drafter() const noexcept override;
     uint32_t preferred_draft_k() const noexcept override;
+    uint32_t max_useful_draft_k() const noexcept override;
+    std::pair<uint32_t, uint32_t> slow_draft_k_band() const noexcept override;
     Result<std::vector<int32_t>> draft_embedded_mtp(int32_t first_token, uint32_t k) override;
 
     bool supports_gpu_greedy_sampling() const noexcept override;

@@ -2097,16 +2097,58 @@ Result<ChatCompletionResponse> SixiServer::handle_chat_completion(
         return num_st;
     };
 
-    auto prefill_from = [&](size_t from) -> Status {
-        std::vector<int32_t> delta(prompt_tokens.begin() + static_cast<std::ptrdiff_t>(from), prompt_tokens.end());
-        auto fw = impl_->backend->forward_tokens(delta);
-        if (!fw.ok()) {
-            if (fw.code() == ErrorCode::NumericNaNOrInf) {
-                impl_->numeric_error_requests.fetch_add(1, std::memory_order_relaxed);
-            }
-            return fw.status();
+    // Saves the live backend state into the least recently used device slot (no logits kept: the slot is a
+    // mid-prompt checkpoint, a later request prefills from it).
+    auto save_checkpoint_slot = [&]() {
+        const uint32_t n_slots = impl_->backend->device_snapshot_slots();
+        if (n_slots == 0) return;
+        if (impl_->device_slot_last_use.size() < n_slots) impl_->device_slot_last_use.resize(n_slots, 0);
+        if (impl_->device_slot_logits.size() < n_slots) impl_->device_slot_logits.resize(n_slots);
+        const std::vector<int32_t> live = impl_->backend->context_tokens();
+        int target = -1;
+        uint64_t oldest = UINT64_MAX;
+        for (uint32_t sidx = 0; sidx < n_slots; ++sidx) {
+            if (impl_->backend->device_snapshot_tokens(sidx) == live) return;
+            if (impl_->device_slot_last_use[sidx] < oldest) { oldest = impl_->device_slot_last_use[sidx]; target = static_cast<int>(sidx); }
         }
-        current_logits = std::move(fw.value());
+        if (target >= 0 && impl_->backend->device_snapshot_save(static_cast<uint32_t>(target)).ok()) {
+            impl_->device_slot_last_use[static_cast<size_t>(target)] = ++impl_->device_slot_clock;
+            auto& sl = impl_->device_slot_logits[static_cast<size_t>(target)];
+            sl.logits.clear();
+            sl.greedy_token = -1;
+        }
+    };
+
+    // Long prefills leave two tail checkpoints (512 and 64 tokens before the end of the prompt): the next request
+    // about the same document differs only in its last tokens (the question and the template tail), and neither
+    // the live state (rollback window) nor the full-prompt slot can serve it. Without them a 36k-token document
+    // costs a full 110 s prefill per question.
+    auto prefill_from = [&](size_t from) -> Status {
+        const size_t n_total = prompt_tokens.size();
+        std::vector<size_t> cuts;
+        if (impl_->cfg.enable_prefix_cache && impl_->backend->device_snapshot_slots() > 0 && n_total - from >= 1024) {
+            if (n_total > 512 && n_total - 512 >= from + 256) cuts.push_back(n_total - 512);
+            cuts.push_back(n_total - 64);
+        }
+        cuts.push_back(n_total);
+        size_t pos = from;
+        for (const size_t cut : cuts) {
+            std::vector<int32_t> delta(prompt_tokens.begin() + static_cast<std::ptrdiff_t>(pos),
+                                       prompt_tokens.begin() + static_cast<std::ptrdiff_t>(cut));
+            auto fw = impl_->backend->forward_tokens(delta);
+            if (!fw.ok()) {
+                if (fw.code() == ErrorCode::NumericNaNOrInf) {
+                    impl_->numeric_error_requests.fetch_add(1, std::memory_order_relaxed);
+                }
+                return fw.status();
+            }
+            pos = cut;
+            if (cut == n_total) {
+                current_logits = std::move(fw.value());
+            } else {
+                save_checkpoint_slot();
+            }
+        }
         return check_numeric(current_logits);
     };
 
@@ -2358,7 +2400,12 @@ Result<ChatCompletionResponse> SixiServer::handle_chat_completion(
         const uint32_t window = impl_->backend->fast_rollback_window();
         uint32_t kmax = std::max<uint32_t>(spec_cfg.min_adaptive_k, impl_->cfg.max_adaptive_k);
         if (window > 0) kmax = std::min(kmax, window);
+        const uint32_t useful = impl_->backend->max_useful_draft_k();
+        if (useful > 0) kmax = std::max(spec_cfg.min_adaptive_k, std::min(kmax, useful));
         spec_cfg.max_adaptive_k = kmax;
+        const auto band = impl_->backend->slow_draft_k_band();
+        spec_cfg.skip_k_lo = band.first;
+        spec_cfg.skip_k_hi = band.second;
     }
     if (impl_->cfg.draft_k > 0) {
         spec_cfg.draft_k = impl_->cfg.draft_k;
@@ -2373,6 +2420,23 @@ Result<ChatCompletionResponse> SixiServer::handle_chat_completion(
             k = std::min(k, preferred);
         }
         spec_cfg.draft_k = k;
+    }
+    if (spec_cfg.adaptive_k && spec_cfg.skip_k_hi > 0 && spec_cfg.max_adaptive_k > spec_cfg.skip_k_hi) {
+        // Block drafter whose verify batch reaches the flat MMQ band (>= 9 rows): start at the top of the band and
+        // let poor acceptance walk k down. Starting at k=3 and climbing one step per fully accepted batch left sixi
+        // at 26.6 vs llama-server's fixed n-max 15 at 33.4 tok/s (A/B 2026-11-09).
+        spec_cfg.draft_k = spec_cfg.max_adaptive_k;
+    }
+    {
+        // Block drafter whose whole block sits inside the former slow band (DSpark / DFlash2: 7 drafts). With the
+        // Thor MMQ limits of patch 0003 a 4..8-row verify costs the same 86-88 ms, so the full block is always the
+        // best draft: fixed k = block (DSpark 37.4 vs 31.0 tok/s adaptive, DFlash2 41.5 vs 19-23 at k = 3).
+        const uint32_t useful = impl_->backend->max_useful_draft_k();
+        if (impl_->cfg.draft_k == 0 && spec_cfg.skip_k_lo > 0 && useful >= spec_cfg.skip_k_lo && useful <= spec_cfg.skip_k_hi) {
+            spec_cfg.draft_k = std::min(useful, std::max<uint32_t>(1u, impl_->cfg.max_adaptive_k));
+            spec_cfg.max_adaptive_k = spec_cfg.draft_k;
+            spec_cfg.adaptive_k = false;
+        }
     }
     if (impl_->cfg.disable_speculation ||
         (!spec_cfg.enable_suffix_drafter && spec_cfg.neural_drafter == NeuralDrafterType::None)) {
@@ -2423,6 +2487,146 @@ Result<ChatCompletionResponse> SixiServer::handle_chat_completion(
         stopped = true;
     }
 
+    // Per-token handling shared by the post-prefill token and every speculative step: routing into the
+    // reasoning/answer compartments, streaming, budgets, loop detection and stop strings. Returns false
+    // when generation must stop (EOS, budget, stop string, loop, client gone).
+    bool want_inject = false;
+    auto process_token = [&](int32_t tok) -> bool {
+        if (cancel_flag != nullptr && cancel_flag->load(std::memory_order_acquire)) {
+            cancelled = true;
+            resp.finish_reason = "cancelled";
+            return false;
+        }
+        if (impl_->backend->is_end_of_generation(tok)) {
+            resp.finish_reason = "stop";
+            stopped = true;
+            return false;
+        }
+
+        auto detok_res = impl_->backend->detokenize({tok});
+        const std::string piece = detok_res.ok() ? detok_res.value() : std::string();
+        generated_tokens.push_back(tok);
+
+        // Route the piece into the reasoning or answer compartment
+        if (in_think) {
+            think_tokens.push_back(tok);
+            const size_t before = think_text.size();
+            think_text.append(piece);
+            const size_t search_from = (before >= 8) ? before - 8 : 0;
+            const size_t tag = think_text.find("</think>", search_from);
+            if (tag != std::string::npos) {
+                std::string after = think_text.substr(tag + 8);
+                think_text.resize(tag);
+                in_think = false;
+                think_closed = true;
+                const size_t pre_len = (tag > before) ? tag - before : 0;
+                if (pre_len > 0 && !emit_delta("reasoning_content", piece.substr(0, pre_len))) return false;
+                while (!after.empty() && after.front() == '\n') after.erase(0, 1);
+                if (!after.empty()) {
+                    answer_text.append(after);
+                    answer_tokens.push_back(tok);
+                    if (!emit_delta("content", after)) return false;
+                }
+            } else {
+                if (!emit_delta("reasoning_content", piece)) return false;
+            }
+        } else {
+            const size_t open = (!think_closed && answer_text.empty()) ? piece.find("<think>") : std::string::npos;
+            if (open != std::string::npos) {
+                in_think = true;
+                think_tokens.push_back(tok);
+                think_text.append(piece.substr(open + 7));
+                if (!think_text.empty() && !emit_delta("reasoning_content", think_text)) return false;
+            } else if (answer_text.empty() && !piece.empty() &&
+                       piece.find_first_not_of("\n") == std::string::npos) {
+                // Leading newlines between </think> and the answer are template glue, not content
+            } else {
+                answer_text.append(piece);
+                answer_tokens.push_back(tok);
+                if (!emit_delta("content", piece)) return false;
+            }
+        }
+
+        const bool budget_ok = budget_tracker.on_token_emitted(piece);
+        if (!budget_ok) {
+            const std::string& reason = budget_tracker.state().finish_reason;
+            if (reason == "reasoning_budget_exceeded" && in_think) {
+                want_inject = true;
+            } else {
+                resp.finish_reason = reason;
+                stopped = true;
+                return false;
+            }
+        }
+
+        if (in_think) {
+            LoopDetectionReport rep = think_loop_detector.inspect(think_tokens);
+            if (rep.loop_detected) {
+                resp.loop_diagnostics = rep;
+                if (req.stop_on_reasoning_loop) {
+                    want_inject = true;
+                }
+            }
+        } else {
+            LoopDetectionReport rep = answer_loop_detector.inspect(answer_tokens);
+            if (rep.loop_detected) {
+                resp.loop_diagnostics = rep;
+                if (req.stop_on_loop) {
+                    resp.finish_reason = "loop_detected";
+                    stopped = true;
+                    return false;
+                }
+            }
+            if (!req.stop.empty()) {
+                bool hit = false;
+                for (const auto& s : req.stop) {
+                    if (s.empty()) continue;
+                    const size_t from = (answer_text.size() > piece.size() + s.size())
+                                            ? answer_text.size() - piece.size() - s.size()
+                                            : 0;
+                    const size_t pos = answer_text.find(s, from);
+                    if (pos != std::string::npos) {
+                        answer_text.resize(pos);
+                        hit = true;
+                        break;
+                    }
+                }
+                if (hit) {
+                    resp.finish_reason = "stop";
+                    stopped = true;
+                    return false;
+                }
+            }
+        }
+        return true;
+    };
+
+    // The token after the prompt is already decided by the prefill (GPU argmax, or sampled here with the
+    // request RNG and carried into the decoder as the anchor), so stream it before the first draft+verify
+    // step instead of holding it back for one full step (~one decode latency of TTFT).
+    int32_t pre_emitted_tok = -1;
+    if (!stopped && !cancelled) {
+        int32_t t0 = -1;
+        if (greedy) {
+            if (impl_->backend->supports_gpu_greedy_sampling() && impl_->backend->last_sampled_greedy_token() >= 0) {
+                t0 = impl_->backend->last_sampled_greedy_token();
+            } else if (!current_logits.empty()) {
+                t0 = core::DeterministicSampler::sample_greedy_argmax(current_logits.data(), impl_->backend->vocab_size());
+            }
+        } else if (!current_logits.empty()) {
+            auto s0 = core::DeterministicSampler::sample_token(
+                current_logits.data(), impl_->backend->vocab_size(), sampling, rng, context_tokens);
+            if (s0.ok()) {
+                t0 = s0.value();
+                spec_decoder.set_carried_token(t0, context_tokens.size());
+            }
+        }
+        if (t0 >= 0) {
+            pre_emitted_tok = t0;
+            process_token(t0);
+        }
+    }
+
     while (!stopped && !cancelled) {
         if (cancel_flag != nullptr && cancel_flag->load(std::memory_order_acquire)) {
             cancelled = true;
@@ -2448,116 +2652,14 @@ Result<ChatCompletionResponse> SixiServer::handle_chat_completion(
             resp.finish_reason = "stop";
             break;
         }
-
-        bool want_inject = false;
-        for (int32_t tok : committed) {
-            if (cancel_flag != nullptr && cancel_flag->load(std::memory_order_acquire)) {
-                cancelled = true;
-                resp.finish_reason = "cancelled";
-                break;
-            }
-            if (impl_->backend->is_end_of_generation(tok)) {
-                resp.finish_reason = "stop";
-                stopped = true;
-                break;
-            }
-
-            auto detok_res = impl_->backend->detokenize({tok});
-            const std::string piece = detok_res.ok() ? detok_res.value() : std::string();
-            generated_tokens.push_back(tok);
-
-            // Route the piece into the reasoning or answer compartment
-            if (in_think) {
-                think_tokens.push_back(tok);
-                const size_t before = think_text.size();
-                think_text.append(piece);
-                const size_t search_from = (before >= 8) ? before - 8 : 0;
-                const size_t tag = think_text.find("</think>", search_from);
-                if (tag != std::string::npos) {
-                    std::string after = think_text.substr(tag + 8);
-                    think_text.resize(tag);
-                    in_think = false;
-                    think_closed = true;
-                    const size_t pre_len = (tag > before) ? tag - before : 0;
-                    if (pre_len > 0 && !emit_delta("reasoning_content", piece.substr(0, pre_len))) break;
-                    while (!after.empty() && after.front() == '\n') after.erase(0, 1);
-                    if (!after.empty()) {
-                        answer_text.append(after);
-                        answer_tokens.push_back(tok);
-                        if (!emit_delta("content", after)) break;
-                    }
-                } else {
-                    if (!emit_delta("reasoning_content", piece)) break;
-                }
-            } else {
-                const size_t open = (!think_closed && answer_text.empty()) ? piece.find("<think>") : std::string::npos;
-                if (open != std::string::npos) {
-                    in_think = true;
-                    think_tokens.push_back(tok);
-                    think_text.append(piece.substr(open + 7));
-                    if (!think_text.empty() && !emit_delta("reasoning_content", think_text)) break;
-                } else if (answer_text.empty() && !piece.empty() &&
-                           piece.find_first_not_of("\n") == std::string::npos) {
-                    // Leading newlines between </think> and the answer are template glue, not content
-                } else {
-                    answer_text.append(piece);
-                    answer_tokens.push_back(tok);
-                    if (!emit_delta("content", piece)) break;
-                }
-            }
-
-            const bool budget_ok = budget_tracker.on_token_emitted(piece);
-            if (!budget_ok) {
-                const std::string& reason = budget_tracker.state().finish_reason;
-                if (reason == "reasoning_budget_exceeded" && in_think) {
-                    want_inject = true;
-                } else {
-                    resp.finish_reason = reason;
-                    stopped = true;
-                    break;
-                }
-            }
-
-            if (in_think) {
-                LoopDetectionReport rep = think_loop_detector.inspect(think_tokens);
-                if (rep.loop_detected) {
-                    resp.loop_diagnostics = rep;
-                    if (req.stop_on_reasoning_loop) {
-                        want_inject = true;
-                    }
-                }
-            } else {
-                LoopDetectionReport rep = answer_loop_detector.inspect(answer_tokens);
-                if (rep.loop_detected) {
-                    resp.loop_diagnostics = rep;
-                    if (req.stop_on_loop) {
-                        resp.finish_reason = "loop_detected";
-                        stopped = true;
-                        break;
-                    }
-                }
-                if (!req.stop.empty()) {
-                    bool hit = false;
-                    for (const auto& s : req.stop) {
-                        if (s.empty()) continue;
-                        const size_t from = (answer_text.size() > piece.size() + s.size())
-                                                ? answer_text.size() - piece.size() - s.size()
-                                                : 0;
-                        const size_t pos = answer_text.find(s, from);
-                        if (pos != std::string::npos) {
-                            answer_text.resize(pos);
-                            hit = true;
-                            break;
-                        }
-                    }
-                    if (hit) {
-                        resp.finish_reason = "stop";
-                        stopped = true;
-                        break;
-                    }
-                }
-            }
+        if (pre_emitted_tok >= 0 && committed.front() != pre_emitted_tok) {
+            return Status::Error(ErrorCode::BackendError, "speculative step committed a different first token than the prefill sampled");
         }
+
+        for (size_t ci = (pre_emitted_tok >= 0) ? 1u : 0u; ci < committed.size(); ++ci) {
+            if (!process_token(committed[ci])) break;
+        }
+        pre_emitted_tok = -1;
 
         if (stopped || cancelled) {
             break;
@@ -2584,6 +2686,7 @@ Result<ChatCompletionResponse> SixiServer::handle_chat_completion(
             think_closed = true;
             resp.reasoning_forced_closed = true;
         }
+        want_inject = false;
     }
 
     const auto t_end = std::chrono::steady_clock::now();

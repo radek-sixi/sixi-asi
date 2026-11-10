@@ -147,14 +147,29 @@ def main():
     ap.add_argument("--raw-engines", default=None,
                     help="name=url@model,... ollama engines driven through /api/generate raw=true with the prompt rendered by --template-url")
     ap.add_argument("--template-url", default=None, help="server exposing /apply-template (sixi-server or llama-server)")
+    ap.add_argument("--merge-json", default=None,
+                    help="comma-separated earlier --out files whose engines are merged into this run (for engines that "
+                         "cannot share the box; the reference may live in a merged file)")
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
+    merged, merged_names = {}, []
+    for path in (a.merge_json.split(",") if a.merge_json else []):
+        with open(path) as f:
+            prev = json.load(f)
+        if prev.get("max_tokens") != a.max_tokens or prev.get("temperature") != a.temperature:
+            print(f"warning: {path} was run with max_tokens={prev.get('max_tokens')} temperature={prev.get('temperature')}",
+                  file=sys.stderr)
+        for t in prev.get("tasks", []):
+            for n, e in t["engines"].items():
+                merged.setdefault(t["name"], {})[n] = e
+                if n not in merged_names:
+                    merged_names.append(n)
     engines = dict(kv.split("=", 1) for kv in a.engines.split(","))  # value: url[@model]
     raw_engines = dict(kv.split("=", 1) for kv in a.raw_engines.split(",")) if a.raw_engines else {}
     extra = json.loads(a.extra_json) if a.extra_json else None
     prompts = [p for p in PROMPTS if not a.only or p[0] in a.only.split(",")]
     results = {"max_tokens": a.max_tokens, "repeats": a.repeats, "temperature": a.temperature, "engines": engines,
-               "raw_engines": raw_engines, "tasks": []}
+               "raw_engines": raw_engines, "merged_from": a.merge_json, "tasks": []}
 
     # warm-up each engine once
     for name, url in engines.items():
@@ -195,6 +210,8 @@ def main():
                 "text": runs[0]["reasoning"] + "␞" + runs[0]["content"],
                 "repeat_identical": all((x["reasoning"], x["content"]) == (runs[0]["reasoning"], runs[0]["content"]) for x in runs),
             }
+        for n, e in merged.get(pname, {}).items():
+            task["engines"].setdefault(n, dict(e))
         ref = a.reference if a.reference in task["engines"] else None
         if ref:
             ref_text = task["engines"][ref]["text"]
@@ -213,7 +230,7 @@ def main():
         print(line, flush=True)
 
     # summary
-    names = list(engines) + list(raw_engines)
+    names = list(engines) + list(raw_engines) + [n for n in merged_names if n not in engines and n not in raw_engines]
     print("\nSUMMARY (median decode tok/s per task, mean over tasks):")
     for name in names:
         vals = [t["engines"][name]["decode_tok_s_median"] for t in results["tasks"] if name in t["engines"]]

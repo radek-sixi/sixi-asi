@@ -44,22 +44,24 @@ void usage() {
         "  --manifest PATH         .sixi manifest (model path, drafter, planner inputs)\n"
         "  --model PATH            GGUF model (overrides manifest shard 0)\n"
         "  --draft-model PATH      external DFlash2 drafter GGUF (default: manifest drafter_gguf_path)\n"
+        "  --mtp-model PATH        external MTP-head GGUF when the main GGUF has no NextN layer (Flash-Next mtp-*.gguf)\n"
         "  --host H --port P       bind address (default 127.0.0.1:8089)\n"
         "  --ctx N                 context window (default 4096)\n"
-        "  --n-batch N             prefill batch size (default 512)\n"
+        "  --n-batch N             prefill batch size (default 2048)\n"
         "  --threads N             CPU threads for the backend (default 8)\n"
         "  --gpu-layers N          layers offloaded to GPU (default 999)\n"
         "  --spec-k N              draft tokens per step (default: min(backend rollback window, 7))\n"
-        "  --spec-k-max N          upper bound of the acceptance-driven draft length (default 7)\n"
+        "  --spec-k-max N          upper bound of the acceptance-driven draft length (default 15; block drafters cap at block-1, chained MTP at 4)\n"
         "  --spec-k-fixed          disable acceptance-driven draft length (always --spec-k tokens)\n"
         "  --kv-type T             KV cache type f16|bf16|q8_0|q4_0 (default: library f16; quantized V enables flash-attn)\n"
         "  --no-neural-drafter     suffix drafter only (no MTP / DFlash2)\n"
         "  --no-spec               plain autoregressive decoding (baseline for A/B)\n"
-        "  --n-rs-seq N            recurrent snapshot ring depth (default 8; bounds O(1) rollback and draft k)\n"
+        "  --n-rs-seq N            recurrent snapshot ring depth (default 16; bounds O(1) rollback and draft k)\n"
         "  --device-slots N        device-side prefix snapshot slots (extra sequences; default 4, 0 = host snapshots)\n"
         "  --no-gpu-sampler        host argmax instead of the GPU backend sampler\n"
         "  --no-mtp-load           do not create the embedded MTP draft context\n"
         "  --no-prefix-cache       disable cross-request KV/state reuse\n"
+        "  --no-warmup             skip the startup warm-up forward (first request then pays the cold start)\n"
         "  --prefix-cache-slots N  post-prefill snapshots kept for prefix reuse (default 4)\n"
         "  --snapshot-dir PATH     persist snapshots of prompts >= 1024 tokens to PATH (NVMe session cache, 32 GiB cap)\n"
         "  --max-concurrent N      admitted requests (default 1; extra requests get 429)\n"
@@ -75,6 +77,7 @@ int main(int argc, char** argv) {
     std::string manifest_path;
     std::string model_path;
     std::string draft_model_path;
+    std::string mtp_model_path;
     std::string model_name;
     std::string host = "127.0.0.1";
     int port = 8089;
@@ -83,19 +86,20 @@ int main(int argc, char** argv) {
     uint32_t max_concurrent = 1;
     int32_t gpu_layers = 999;
     uint32_t n_ctx = 4096;
-    uint32_t n_batch = 512;
+    uint32_t n_batch = 2048;   // one ubatch per prompt up to 2k tokens: Flash-Next prefill 21% faster than 512-chunks (2026-11-09)
     uint32_t n_threads = 8;
     uint32_t spec_k = 0;
-    uint32_t spec_k_max = 7;
+    uint32_t spec_k_max = 15;   // block drafters: DSpine b16 verifies 16 rows on the MMQ path (2026-11-09)
     bool spec_k_adaptive = true;
     int32_t kv_type_k = -1;
     int32_t kv_type_v = -1;
-    uint32_t n_rs_seq = 8;
+    uint32_t n_rs_seq = 16;   // rollback ring >= max draft length + 1
     uint32_t device_slots = 4;
     bool gpu_sampler = true;
     bool load_mtp = true;
     bool use_neural_drafter = true;
     bool disable_speculation = false;
+    bool warmup = true;
     bool enable_prefix_cache = true;
     uint32_t prefix_cache_slots = 4;
     std::string snapshot_dir;
@@ -127,6 +131,7 @@ int main(int argc, char** argv) {
         else if (arg == "--manifest") manifest_path = next();
         else if (arg == "--model") model_path = next();
         else if (arg == "--draft-model") draft_model_path = next();
+        else if (arg == "--mtp-model") mtp_model_path = next();
         else if (arg == "--model-name") model_name = next();
         else if (arg == "--host") host = next();
         else if (arg == "--port") port = static_cast<int>(need_int("--port", next(), 0, 65535));
@@ -157,6 +162,7 @@ int main(int argc, char** argv) {
         else if (arg == "--no-gpu-sampler") gpu_sampler = false;
         else if (arg == "--no-mtp-load") load_mtp = false;
         else if (arg == "--no-spec") disable_speculation = true;
+        else if (arg == "--no-warmup") warmup = false;
         else if (arg == "--no-prefix-cache") enable_prefix_cache = false;
         else if (arg == "--prefix-cache-slots") prefix_cache_slots = static_cast<uint32_t>(need_int("--prefix-cache-slots", next(), 0, 64));
         else if (arg == "--snapshot-dir") snapshot_dir = next();
@@ -255,6 +261,7 @@ int main(int argc, char** argv) {
         core::LlamaCppBackend::LoadOptions lopts;
         lopts.model_path = model_path;
         lopts.draft_model_path = draft_model_path;
+        lopts.mtp_model_path = mtp_model_path;
         lopts.n_gpu_layers = gpu_layers;
         lopts.n_ctx = n_ctx;
         lopts.n_batch = n_batch;
@@ -279,6 +286,24 @@ int main(int argc, char** argv) {
                   << " n_rs_seq=" << tel.active_n_rs_seq << "\n";
         if (!tel.abi_canary_verified) {
             std::cerr << "WARNING: llama.cpp ABI canary failed; speculative fast paths and GPU sampling are disabled.\n";
+        }
+        if (warmup) {
+            // Touch the weights (every expert of an MoE), the drafter contexts and the compute graphs once, so the
+            // first request does not pay the cold start (measured 2026-11-09, Flash-Next IQ2_XS: 1156 ms vs 472 ms warm).
+            const auto t0 = std::chrono::steady_clock::now();
+            std::string text;
+            for (int i = 0; i < 24; ++i) text += "The quick brown fox jumps over the lazy dog near the old river bank. ";
+            auto toks = lb->tokenize(text, true);
+            size_t n_warm = 0;
+            if (toks.ok() && !toks->empty()) {
+                n_warm = toks->size();
+                if (lb->forward_tokens(toks.value()).ok()) {
+                    (void)lb->forward_tokens(std::vector<int32_t>{toks->back()});  // single-token decode graph
+                }
+                (void)lb->reset_state();
+            }
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            std::cout << "Warm-up: " << n_warm << " tokens in " << static_cast<int>(ms) << " ms\n";
         }
         backend = lb;
     }

@@ -23,6 +23,21 @@ git -C "$DEST" checkout --quiet "$COMMIT"
 echo "llama.cpp at $(git -C "$DEST" rev-parse HEAD) ($(git -C "$DEST" log -1 --format=%cd))"
 mkdir -p "$DEST/build"
 
+# Local kernel patches (kept in patches/llama.cpp, applied on top of the pinned commit; idempotent)
+PATCH_DIR="$(cd "$(dirname "$0")/.." && pwd)/patches/llama.cpp"
+if [ -d "$PATCH_DIR" ]; then
+  for pf in "$PATCH_DIR"/*.patch; do
+    [ -e "$pf" ] || continue
+    if git -C "$DEST" apply --check "$pf" 2>/dev/null; then
+      git -C "$DEST" apply "$pf" && echo "applied $(basename "$pf")"
+    elif git -C "$DEST" apply --reverse --check "$pf" 2>/dev/null; then
+      echo "already applied $(basename "$pf")"
+    else
+      echo "patch does not apply cleanly: $pf" >&2; exit 3
+    fi
+  done
+fi
+
 cmake -S "$DEST" -B "$DEST/build" -DCMAKE_BUILD_TYPE=Release \
   -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCH" \
   -DGGML_CUDA_GRAPHS=ON -DGGML_CUDA_FA=ON -DGGML_NATIVE=ON \

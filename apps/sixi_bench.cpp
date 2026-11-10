@@ -78,14 +78,14 @@ Result<SingleRunMetrics> execute_benchmark_run(
     std::vector<float> logits;
     auto t0 = std::chrono::steady_clock::now();
     if (backend->supports_gpu_greedy_sampling()) {
-        auto pf_res = backend->forward_tokens_greedy(tokens, 512);
+        auto pf_res = backend->forward_tokens_greedy(tokens, 0);   // chunk = --n-batch
         auto t1 = std::chrono::steady_clock::now();
         if (!pf_res.ok()) {
             return Result<SingleRunMetrics>(pf_res.status());
         }
         m.ttft_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
     } else {
-        auto pf_res = backend->forward_tokens(tokens, 512);
+        auto pf_res = backend->forward_tokens(tokens, 0);   // chunk = --n-batch
         auto t1 = std::chrono::steady_clock::now();
         if (!pf_res.ok()) {
             return Result<SingleRunMetrics>(pf_res.status());
@@ -290,13 +290,15 @@ int main(int argc, char** argv) {
     std::string prompt = "Benchmarking SIXI-ASI deterministic inference engine: explain top-k MoE routing and GDN state propagation.";
     std::string out_json_path;
     std::string draft_model_path;
+    std::string mtp_model_path;
     float temperature = 0.0f;
-    uint32_t n_rs_seq = 8;
+    uint32_t n_rs_seq = 16;
     uint32_t n_threads = 8;
-    uint32_t n_batch = 512;
+    uint32_t n_batch = 2048;   // one ubatch per prompt up to 2k tokens: Flash-Next prefill 21% faster than 512-chunks (2026-11-09)
     bool gpu_sampler = true;
     bool load_mtp = true;
     bool q8_stage = true;
+    bool ple_device = false;
     bool as_json = false;
     bool run_suite = false;
 
@@ -316,6 +318,7 @@ int main(int argc, char** argv) {
         else if (arg == "--prompt" && i + 1 < argc) prompt = argv[++i];
         else if (arg == "--out" && i + 1 < argc) out_json_path = argv[++i];
         else if (arg == "--draft-model" && i + 1 < argc) draft_model_path = argv[++i];
+        else if (arg == "--mtp-model" && i + 1 < argc) mtp_model_path = argv[++i];
         else if (arg == "--temperature" && i + 1 < argc) temperature = std::stof(argv[++i]);
         else if (arg == "--n-rs-seq" && i + 1 < argc) n_rs_seq = static_cast<uint32_t>(std::stoul(argv[++i]));
         else if (arg == "--threads" && i + 1 < argc) n_threads = static_cast<uint32_t>(std::stoul(argv[++i]));
@@ -323,6 +326,8 @@ int main(int argc, char** argv) {
         else if (arg == "--no-gpu-sampler") gpu_sampler = false;
         else if (arg == "--no-mtp-load") load_mtp = false;
         else if (arg == "--no-q8-stage") q8_stage = false;
+        else if (arg == "--no-ple-device") ple_device = false;
+        else if (arg == "--ple-device") ple_device = true;
         else if (arg == "--json") as_json = true;
         else if (arg == "--suite") run_suite = true;
     }
@@ -349,6 +354,7 @@ int main(int argc, char** argv) {
         core::LlamaCppBackend::LoadOptions lopts;
         lopts.model_path = model_path;
         lopts.draft_model_path = draft_model_path;
+        lopts.mtp_model_path = mtp_model_path;
         lopts.n_rs_seq = n_rs_seq;
         lopts.device_snapshot_slots = 0; // the bench measures the raw decode path
         lopts.n_threads = n_threads;
@@ -357,6 +363,7 @@ int main(int argc, char** argv) {
         lopts.enable_gpu_greedy_sampler = gpu_sampler;
         lopts.load_embedded_mtp = load_mtp;
         lopts.enable_cuda_q8_1_activation_stage = q8_stage;
+        lopts.ple_on_device = ple_device;
         lopts.ple_shard_path = manifest_ple_shard;
         lopts.ple_desc = manifest_ple;
         lopts.n_gpu_layers = gpu_layers;
@@ -522,6 +529,7 @@ int main(int argc, char** argv) {
             suite_json["runtime_telemetry"] = {
                 {"abi_canary_verified", tel.abi_canary_verified},
                 {"embedded_mtp_loaded", tel.embedded_mtp_loaded},
+                {"external_mtp_loaded", tel.external_mtp_loaded},
                 {"dflash2_drafter_loaded", tel.dflash2_drafter_loaded},
                 {"forward_steps", tel.forward_steps},
                 {"total_tokens_decoded", tel.total_tokens_decoded},
@@ -674,6 +682,7 @@ int main(int argc, char** argv) {
             {"abi_canary_verified", tel.abi_canary_verified},
             {"abi_layout_version", tel.abi_layout_version},
             {"embedded_mtp_loaded", tel.embedded_mtp_loaded},
+                {"external_mtp_loaded", tel.external_mtp_loaded},
             {"dflash2_drafter_loaded", tel.dflash2_drafter_loaded},
             {"total_decode_ms", tel.total_decode_ms},
             {"last_prefill_decode_ms", tel.last_prefill_decode_ms},
@@ -681,6 +690,7 @@ int main(int argc, char** argv) {
             {"dflash_inject_skipped", tel.dflash_inject_skipped},
             {"dflash_draft_calls", tel.dflash_draft_calls},
             {"dflash_draft_unsynced", tel.dflash_draft_unsynced},
+            {"ple_override_applied", tel.ple_override_applied},
             {"active_n_rs_seq", tel.active_n_rs_seq}
         };
     }

@@ -18,6 +18,7 @@ Usage:
   intel_eval.py --engines sixi=http://127.0.0.1:8089,llama=http://127.0.0.1:8099 \
       --tasks gsm8k,humaneval,tools,needle --n-gsm 30 --n-he 20 --effort low --out results.json
 """
+import urllib.error
 import argparse, gzip, json, os, pathlib, random, re, statistics, subprocess, sys, tempfile, time, urllib.request
 
 DATA_DIR = pathlib.Path(__file__).resolve().parent / "data"
@@ -57,8 +58,15 @@ def load_humaneval(n, seed):
 
 
 def chat(url, messages, max_tokens, temperature, effort, extra=None, timeout=1800, tools=None):
+    # engine url may carry "@model-name" (Edge-LLM / ollama need an explicit model field)
+    model = None
+    if "@" in url:
+        url, model = url.split("@", 1)
     body = {"messages": messages, "max_tokens": max_tokens, "temperature": temperature, "seed": 42,
-            "chat_template_kwargs": {"reasoning_effort": effort}}
+            # enable_thinking: Qwen3.8 templates think by default on llama.cpp, Edge-LLM defaults to off
+            "chat_template_kwargs": {"reasoning_effort": effort, "enable_thinking": True}}
+    if model:
+        body["model"] = model
     if tools:
         body["tools"] = tools
     if extra:
@@ -66,8 +74,11 @@ def chat(url, messages, max_tokens, temperature, effort, extra=None, timeout=180
     req = urllib.request.Request(url.rstrip("/") + "/v1/chat/completions", data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
     t0 = time.perf_counter()
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        obj = json.loads(r.read())
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            obj = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"HTTP {e.code}: {e.read()[:400].decode(errors='replace')}") from None
     dt = time.perf_counter() - t0
     ch = obj["choices"][0]
     msg = ch["message"]
