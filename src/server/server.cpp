@@ -2,6 +2,7 @@
 #include "sixi_asi/numeric.hpp"
 
 #include <algorithm>
+#include <condition_variable>
 #include <chrono>
 #include <cmath>
 #include <cctype>
@@ -1386,6 +1387,13 @@ struct SixiServer::Impl {
     mutable std::mutex backend_mutex;
     mutable std::mutex metrics_mutex;
 
+    // Parallel streams (backend->stream_count() > 1): a request leases one backend stream for its lifetime.
+    // backend_mutex then only covers the prefill / prefix-cache phase; decode loops of different streams run
+    // concurrently and the backend batches their forward passes.
+    std::mutex stream_mutex;
+    std::condition_variable stream_cv;
+    std::vector<uint8_t> stream_busy;
+
     std::atomic<uint64_t> request_seq{0};
     std::atomic<uint64_t> total_requests{0};
     std::atomic<uint64_t> active_requests{0};
@@ -2074,6 +2082,53 @@ Result<ChatCompletionResponse> SixiServer::handle_chat_completion(
     // 3. Backend session: the whole request runs on the single backend sequence under one lock
     //    (no per-step state swapping; concurrent requests queue FIFO on the mutex)
     // ------------------------------------------------------------------
+    const uint32_t n_streams = std::max<uint32_t>(1u, impl_->backend->stream_count());
+    struct StreamLease {
+        Impl* impl;
+        uint32_t id;
+        ~StreamLease() {
+            impl->backend->end_generation();
+            impl->backend->bind_stream(0);
+            {
+                std::lock_guard<std::mutex> lk(impl->stream_mutex);
+                if (id < impl->stream_busy.size()) impl->stream_busy[id] = 0;
+            }
+            impl->stream_cv.notify_all();
+        }
+    };
+    uint32_t stream_id = 0;
+    {
+        std::unique_lock<std::mutex> lk(impl_->stream_mutex);
+        if (impl_->stream_busy.size() < n_streams) impl_->stream_busy.resize(n_streams, 0);
+        impl_->stream_cv.wait(lk, [&] {
+            for (uint32_t s = 0; s < n_streams; ++s) if (!impl_->stream_busy[s]) return true;
+            return false;
+        });
+        // A free stream whose live state the prompt continues (within the rollback window) wins; otherwise the
+        // lowest free index, which keeps the active sequence ids contiguous (one ubatch per batched pass).
+        int best = -1;
+        size_t best_keep = 0;
+        const uint32_t window = impl_->backend->fast_rollback_window();
+        for (uint32_t s = 0; s < n_streams; ++s) {
+            if (impl_->stream_busy[s]) continue;
+            if (best < 0) best = static_cast<int>(s);
+            if (n_streams == 1 || !impl_->cfg.enable_prefix_cache) continue;
+            const std::vector<int32_t> hist = impl_->backend->stream_context_tokens(s);
+            size_t lcp = 0;
+            const size_t lim = std::min(hist.size(), prompt_tokens.size());
+            while (lcp < lim && hist[lcp] == prompt_tokens[lcp]) ++lcp;
+            const size_t keep = std::min(lcp, prompt_tokens.size() - 1);
+            if (keep > best_keep && hist.size() - keep <= window) {
+                best_keep = keep;
+                best = static_cast<int>(s);
+            }
+        }
+        stream_id = static_cast<uint32_t>(best);
+        impl_->stream_busy[stream_id] = 1;
+    }
+    StreamLease stream_lease{impl_.get(), stream_id};
+    impl_->backend->bind_stream(stream_id);
+
     std::unique_lock<std::mutex> backend_lock(impl_->backend_mutex);
     impl_->backend->set_gpu_greedy_sampling_enabled(greedy);
 
@@ -2135,7 +2190,7 @@ Result<ChatCompletionResponse> SixiServer::handle_chat_completion(
         for (const size_t cut : cuts) {
             std::vector<int32_t> delta(prompt_tokens.begin() + static_cast<std::ptrdiff_t>(pos),
                                        prompt_tokens.begin() + static_cast<std::ptrdiff_t>(cut));
-            auto fw = impl_->backend->forward_tokens(delta);
+            auto fw = impl_->backend->forward_tokens(delta, 0);   // 0: the backend's largest chunk (n_batch)
             if (!fw.ok()) {
                 if (fw.code() == ErrorCode::NumericNaNOrInf) {
                     impl_->numeric_error_requests.fetch_add(1, std::memory_order_relaxed);
@@ -2367,6 +2422,12 @@ Result<ChatCompletionResponse> SixiServer::handle_chat_completion(
     // ------------------------------------------------------------------
     // 4. Decode loop
     // ------------------------------------------------------------------
+    if (n_streams > 1) {
+        // The prefill and the shared prefix-cache bookkeeping are done: other requests may start, and this
+        // stream's draft / verify passes are batched with those of the other generating streams.
+        backend_lock.unlock();
+        impl_->backend->begin_generation();
+    }
     BudgetTracker budget_tracker(budgets);
     bool in_think = rp.opens_think_block;
     bool think_closed = false;
@@ -2797,7 +2858,7 @@ Result<ChatCompletionResponse> SixiServer::handle_chat_completion(
 
     // Persist the post-generation state for the NVMe session cache (off the TTFT path; the next turn of this
     // conversation restores it and prefills only the new messages)
-    if (!cancelled && !impl_->cfg.snapshot_dir.empty() && impl_->backend->device_snapshot_slots() > 0 &&
+    if (!cancelled && n_streams == 1 && !impl_->cfg.snapshot_dir.empty() && impl_->backend->device_snapshot_slots() > 0 &&
         context_tokens.size() >= impl_->cfg.snapshot_disk_min_tokens) {
         auto ck = impl_->backend->checkpoint_state(rng);
         if (ck.ok() && !ck->opaque_backend_state.empty()) {
@@ -2805,7 +2866,9 @@ Result<ChatCompletionResponse> SixiServer::handle_chat_completion(
         }
     }
 
-    backend_lock.unlock();
+    if (backend_lock.owns_lock()) {
+        backend_lock.unlock();
+    }
 
     // Record runtime metrics
     {

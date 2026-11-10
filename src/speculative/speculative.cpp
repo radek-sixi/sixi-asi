@@ -1,4 +1,3 @@
-#include <cstdlib>
 #include "sixi_asi/speculative.hpp"
 
 #include <algorithm>
@@ -454,7 +453,14 @@ Result<SpeculativeStepResult> SpeculativeDecoder::step(
         return execute_ar_step(false, 0.0);
     }
 
-    const uint32_t k = current_k_;
+    // Streams sharing a forward pass: the backend names the draft length that maximises aggregate throughput
+    // (all streams use it, so the pass needs no padding).
+    uint32_t k = current_k_;
+    if (flat_band()) {
+        if (const uint32_t shared_k = target_backend_->shared_draft_k(); shared_k > 0) {
+            k = std::clamp(shared_k, cfg_.min_adaptive_k, cfg_.max_adaptive_k);
+        }
+    }
 
     // 2. Fast single-batch speculative verification + O(1) prefix rollback path
     //    (backends with llama_memory_seq_rm + recurrent snapshot ring).

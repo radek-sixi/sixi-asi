@@ -118,30 +118,38 @@ def chart_verify(d, t):
 
 
 def chart_longctx(d, t):
+    """Two bars per row (before / after, or other / ours). Optional keys: unit, tick_step, fmt_before, fmt_after,
+    before_color ("orange" for an earlier version of the same thing, "gray" for another engine), axis_label."""
     left, right, top, bh, inner, gap = 150, 90, 100, 16, 4, 20
     rows = d["rows"]
-    h = top + len(rows) * (2 * bh + inner + gap) + 40
-    vmax = max(r["before_s"] for r in rows)
-    step = 50
+    unit = d.get("unit", " s")
+    fb, fa = d.get("fmt_before", "{:.0f}"), d.get("fmt_after", "{:.1f}")
+    cb = t[d.get("before_color", "orange")]
+    axis = d.get("axis_label")
+    h = top + len(rows) * (2 * bh + inner + gap) + (58 if axis else 40)
+    vmax = max(max(r["before_s"], r["after_s"]) for r in rows)
+    step = d.get("tick_step", 50)
     ticks = list(range(0, int(vmax) + step, step))
     sx = (W - left - right) / ticks[-1]
     o = svg_open(h, t, d["title"], d["subtitle"])
     o.append(text(24, 30, d["title"], t["text"], 16, weight=600))
     o.append(text(24, 50, d["subtitle"], t["text2"], 12))
-    o += legend(24, 74, [(d["before_label"], t["orange"]), (d["after_label"], t["blue"])], t)
+    o += legend(24, 74, [(d["before_label"], cb), (d["after_label"], t["blue"])], t)
     y0 = top - 8
     y1 = top + len(rows) * (2 * bh + inner + gap) - gap + 8
     for v in ticks:
         x = left + v * sx
         o.append(f'<line x1="{x:.1f}" y1="{y0}" x2="{x:.1f}" y2="{y1}" stroke="{t["grid"]}" stroke-width="1"/>')
-        o.append(text(x, y1 + 18, f"{v} s", t["muted"], 11, "middle"))
+        o.append(text(x, y1 + 18, f"{v}{unit}", t["muted"], 11, "middle"))
+    if axis:
+        o.append(text(left + (W - left - right) / 2, y1 + 38, axis, t["muted"], 11, "middle"))
     for i, r in enumerate(rows):
         y = top + i * (2 * bh + inner + gap)
         o.append(text(left - 12, y + bh + inner / 2 + 4, r["label"], t["text2"], 13, "end"))
-        o.append(hbar(left, y, r["before_s"] * sx, bh, t["orange"]))
-        o.append(text(left + r["before_s"] * sx + 8, y + bh - 3, f'{r["before_s"]:.0f} s', t["text"], 12, weight=600))
+        o.append(hbar(left, y, r["before_s"] * sx, bh, cb))
+        o.append(text(left + r["before_s"] * sx + 8, y + bh - 3, fb.format(r["before_s"]) + unit, t["text"], 12, weight=600))
         o.append(hbar(left, y + bh + inner, r["after_s"] * sx, bh, t["blue"]))
-        o.append(text(left + max(r["after_s"] * sx, 4) + 8, y + 2 * bh + inner - 3, f'{r["after_s"]:.1f} s', t["text"], 12, weight=600))
+        o.append(text(left + max(r["after_s"] * sx, 4) + 8, y + 2 * bh + inner - 3, fa.format(r["after_s"]) + unit, t["text"], 12, weight=600))
     o.append("</svg>")
     return "\n".join(o)
 
@@ -153,7 +161,10 @@ def main():
     a = ap.parse_args()
     d = json.load(open(a.data))
     os.makedirs(a.out, exist_ok=True)
-    for name, fn in (("engines", chart_engines), ("verify-cost", chart_verify), ("long-context", chart_longctx)):
+    for name, fn in (("engines", chart_engines), ("verify-cost", chart_verify), ("long-context", chart_longctx),
+                     ("concurrency", chart_longctx), ("prefill", chart_longctx)):
+        if name not in d:
+            continue
         for mode, t in THEMES.items():
             path = os.path.join(a.out, f"{name}-{mode}.svg")
             open(path, "w").write(fn(d[name], t) + "\n")

@@ -237,6 +237,20 @@ public:
     virtual Status device_snapshot_restore(uint32_t slot) { (void)slot; return Status::Error(ErrorCode::BackendError, "device snapshots unsupported"); }
     virtual std::vector<int32_t> device_snapshot_tokens(uint32_t slot) const { (void)slot; return {}; }
 
+    // Parallel streams: independent live sequences inside one backend. A thread selects the stream its calls act
+    // on with bind_stream() (thread-local, default 0). Between begin_generation() and end_generation() the
+    // stream's draft / verify / single-token calls are batched with those of the other generating streams into
+    // one forward pass; outside that window they run alone.
+    virtual uint32_t stream_count() const noexcept { return 1; }
+    virtual void bind_stream(uint32_t stream) noexcept { (void)stream; }
+    virtual std::vector<int32_t> stream_context_tokens(uint32_t stream) const { return stream == 0 ? context_tokens() : std::vector<int32_t>{}; }
+    virtual void begin_generation() noexcept {}
+    virtual void end_generation() noexcept {}
+    virtual uint32_t generating_streams() const noexcept { return 0; }
+    // Draft length a block drafter should use while several streams share the verify pass (0 = no opinion, e.g.
+    // a single generating stream): the pass cost grows with the total row count, so each stream drafts less.
+    virtual uint32_t shared_draft_k() const noexcept { return 0; }
+
     // Optional fast O(1) GPU prefix rollback & embedded MTP drafting (Section 8)
     virtual bool supports_fast_prefix_rollback() const noexcept { return false; }
     // Max number of trailing tokens rollback_to_position() can remove in O(1) (0 = unsupported).
@@ -397,6 +411,7 @@ public:
         uint32_t n_rs_seq = 8;                         // Recurrent-state snapshot ring depth (max O(1) rollback = n_rs_seq tokens)
         uint32_t n_outputs_max = 16;                   // Max logits/sampler outputs per ubatch (>= 1 + max draft k)
         uint32_t device_snapshot_slots = 4;            // extra sequences for O(ms) device-side prefix snapshots (0 = off)
+        uint32_t n_streams = 1;                        // parallel live sequences (batched multi-stream decoding); each gets n_ctx tokens
         bool ple_on_device = false;                    // place per_layer_token_embd on the GPU buffer; needs a CUDA get_rows kernel for its quant type (iq4_nl), else the scheduler copies the 27 GB table to the host every graph
         int32_t kv_type_k = -1;                        // ggml type for the K cache (-1 = library default f16; 8 = q8_0, 2 = q4_0)
         int32_t kv_type_v = -1;                        // ggml type for the V cache (quantized V requires flash attention)
@@ -435,6 +450,8 @@ public:
         uint64_t device_snapshots_saved = 0;
         uint64_t device_snapshots_restored = 0;
         uint32_t device_snapshot_slot_count = 0;
+        uint64_t batched_passes = 0;           // shared draft / verify passes run for generating streams
+        uint64_t batched_ops = 0;              // stream ops served by those passes (ops / passes = mean streams per pass)
         uint64_t last_state_snapshot_bytes = 0;
         NumericHealthReport last_numeric_health{};
     };
@@ -471,6 +488,14 @@ public:
 
     Result<std::vector<std::vector<float>>> forward_sequence_all_logits(
         const std::vector<int32_t>& input_tokens) override;
+
+    uint32_t stream_count() const noexcept override;
+    void bind_stream(uint32_t stream) noexcept override;
+    std::vector<int32_t> stream_context_tokens(uint32_t stream) const override;
+    void begin_generation() noexcept override;
+    void end_generation() noexcept override;
+    uint32_t generating_streams() const noexcept override;
+    uint32_t shared_draft_k() const noexcept override;
 
     uint32_t device_snapshot_slots() const noexcept override;
     Status device_snapshot_save(uint32_t slot) override;

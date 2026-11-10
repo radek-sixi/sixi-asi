@@ -58,6 +58,8 @@ void usage() {
         "  --no-spec               plain autoregressive decoding (baseline for A/B)\n"
         "  --n-rs-seq N            recurrent snapshot ring depth (default 16; bounds O(1) rollback and draft k)\n"
         "  --device-slots N        device-side prefix snapshot slots (extra sequences; default 4, 0 = host snapshots)\n"
+        "  --parallel N            parallel streams: N requests decode at once, their forward passes batched\n"
+        "                          (default 1; each stream gets its own --ctx tokens; needs a block drafter or --no-spec)\n"
         "  --no-gpu-sampler        host argmax instead of the GPU backend sampler\n"
         "  --no-mtp-load           do not create the embedded MTP draft context\n"
         "  --no-prefix-cache       disable cross-request KV/state reuse\n"
@@ -84,6 +86,7 @@ int main(int argc, char** argv) {
     std::string backend_name = "llamacpp";
     ExecutionMode mode = ExecutionMode::StrictReplay;
     uint32_t max_concurrent = 1;
+    uint32_t parallel = 1;
     int32_t gpu_layers = 999;
     uint32_t n_ctx = 4096;
     uint32_t n_batch = 2048;   // one ubatch per prompt up to 2k tokens: Flash-Next prefill 21% faster than 512-chunks (2026-11-09)
@@ -158,6 +161,7 @@ int main(int argc, char** argv) {
         }
         else if (arg == "--no-neural-drafter") use_neural_drafter = false;
         else if (arg == "--n-rs-seq") n_rs_seq = static_cast<uint32_t>(need_int("--n-rs-seq", next(), 0, 32));
+        else if (arg == "--parallel") parallel = static_cast<uint32_t>(need_int("--parallel", next(), 1, 16));
         else if (arg == "--device-slots") device_slots = static_cast<uint32_t>(need_int("--device-slots", next(), 0, 16));
         else if (arg == "--no-gpu-sampler") gpu_sampler = false;
         else if (arg == "--no-mtp-load") load_mtp = false;
@@ -178,6 +182,7 @@ int main(int argc, char** argv) {
     server::ServerConfig scfg;
     scfg.bind_host = host;
     scfg.port = port;
+    max_concurrent = std::max(max_concurrent, parallel);
     scfg.max_concurrent_requests = max_concurrent;
     scfg.execution_mode = mode;
     scfg.n_ctx = n_ctx;
@@ -271,6 +276,7 @@ int main(int argc, char** argv) {
         lopts.kv_type_v = kv_type_v;
         lopts.n_rs_seq = n_rs_seq;
         lopts.device_snapshot_slots = device_slots;
+        lopts.n_streams = parallel;
         lopts.enable_gpu_greedy_sampler = gpu_sampler;
         lopts.load_embedded_mtp = load_mtp;
         lopts.mode = mode;

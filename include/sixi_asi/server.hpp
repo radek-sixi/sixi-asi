@@ -250,8 +250,9 @@ struct RuntimeMetrics {
 struct ServerConfig {
     std::string bind_host = "127.0.0.1";
     int port = 8089;
-    // Requests beyond this are rejected with 429. Admitted requests are executed one at a time on the single
-    // backend sequence (FIFO on the backend mutex); no per-step state swapping between requests.
+    // Requests beyond this are rejected with 429. Admitted requests wait for a free backend stream: one stream
+    // (default) runs them one at a time, FIFO; a backend loaded with N parallel streams decodes N requests at
+    // once and batches their forward passes.
     uint32_t max_concurrent_requests = 1;
     uint32_t n_ctx = 4096;                  // context window of the backend (caps prompt + max_tokens)
     ExecutionMode execution_mode = ExecutionMode::StrictReplay;

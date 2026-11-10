@@ -1,0 +1,51 @@
+{
+ "url": "http://127.0.0.1:8099",
+ "rows": [
+  {
+   "streams": 1,
+   "wall_s": 33.89044181200734,
+   "tokens": 1268,
+   "aggregate_tok_s": 37.41467895383852,
+   "per_stream_decode_tok_s": [
+    41.53
+   ],
+   "mean_ttft_s": 0.486
+  },
+  {
+   "streams": 2,
+   "wall_s": 41.14940229000058,
+   "tokens": 2511,
+   "aggregate_tok_s": 61.02154248325935,
+   "per_stream_decode_tok_s": [
+    34.21,
+    33.23
+   ],
+   "mean_ttft_s": 0.487
+  },
+  {
+   "streams": 3,
+   "wall_s": 49.83677134999016,
+   "tokens": 3804,
+   "aggregate_tok_s": 76.32918218729576,
+   "per_stream_decode_tok_s": [
+    28.05,
+    27.85,
+    28.07
+   ],
+   "mean_ttft_s": 0.387
+  },
+  {
+   "streams": 4,
+   "wall_s": 60.50954642999568,
+   "tokens": 5072,
+   "aggregate_tok_s": 83.82148436475005,
+   "per_stream_decode_tok_s": [
+    22.76,
+    22.94,
+    22.77,
+    23.13
+   ],
+   "mean_ttft_s": 0.441
+  }
+ ]
+}

@@ -1,0 +1,39 @@
+{
+  "config": {
+    "engines": "sixi-p4=http://127.0.0.1:8091",
+    "tasks": "tools,needle",
+    "n_gsm": 30,
+    "n_he": 20,
+    "seed": 1234,
+    "max_tokens": 8192,
+    "temperature": 0.0,
+    "effort": "low",
+    "out": "gate_tn.json"
+  },
+  "engines": {
+    "sixi-p4": {
+      "tasks": {
+        "tools": {
+          "passed": true,
+          "turns": 3,
+          "final": "93.50 EUR",
+          "calls": [
+            "lookup_price",
+            "lookup_price",
+            "calculator"
+          ],
+          "used_lookup": true,
+          "used_calc": true,
+          "answer_ok": true
+        },
+        "needle": {
+          "passed": true,
+          "content": "ORCHID-7431-TANGO",
+          "doc_chars": 41210,
+          "completion_tokens": 83,
+          "wall_s": 20.57
+        }
+      }
+    }
+  }
+}

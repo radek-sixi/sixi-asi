@@ -1,0 +1,177 @@
+{
+  "max_tokens": 256,
+  "repeats": 3,
+  "temperature": 0.0,
+  "engines": {
+    "sixi-pubud": "http://127.0.0.1:8091"
+  },
+  "raw_engines": {},
+  "merged_from": null,
+  "tasks": [
+    {
+      "name": "GSM8K-Math",
+      "engines": {
+        "sixi-pubud": {
+          "runs_decode_tok_s": [
+            37.00646111096447,
+            37.05333326516285,
+            37.005358735419264
+          ],
+          "runs_ttft_s": [
+            0.4491268589918036,
+            0.002479198999935761,
+            0.002870704003726132
+          ],
+          "decode_tok_s_median": 37.00646111096447,
+          "decode_tok_s_mean": 37.021717703848864,
+          "decode_tok_s_stdev": 0.022360107272543787,
+          "ttft_s_median": 0.002870704003726132,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": {
+            "decode_tok_per_s": 37.1526204194383,
+            "mean_acceptance_length": 4.526315789473684,
+            "prefill_ms": 446.989007,
+            "snapshot_ms": 0.353385,
+            "tpot_ms": 26.9160018515625,
+            "ttft_ms": 447.342475
+          },
+          "text": "We need answer arithmetic. Need compute total energy consumption kWh over 5 hours. Data center 4 racks *12 nodes =48 nodes. 75% peak: 0.75*48=36 nodes. 25% idle:12 nodes. Peak 850W, idle 250W. Total power =36*850 +12*250 =30600+3000=33600 W =33.6 kW. Over 5h =168 kWh. Need show arithmetic and end with exact number. Ensure final ends with exact number maybe \"168 kWh\" or just 168? User: end with the exact number. Could end with 168 kWh? \"exact number\" maybe 168. To be safe final line: 168 kWh. But if they want exact number maybe no units? They ask total energy consumption in kWh, so number is 168. End with exact number: maybe final sentence \"168\". But include units? \"end with the exact number\" likely final token should be number. Could do: ... = 1\u241e",
+          "repeat_identical": true
+        }
+      }
+    },
+    {
+      "name": "HumanEval-Code",
+      "engines": {
+        "sixi-pubud": {
+          "runs_decode_tok_s": [
+            37.941107319817974,
+            37.9896860135656,
+            38.00685381884556
+          ],
+          "runs_ttft_s": [
+            0.30089214199688286,
+            0.002387503001955338,
+            0.002352762996451929
+          ],
+          "decode_tok_s_median": 37.9896860135656,
+          "decode_tok_s_mean": 37.979215717409716,
+          "decode_tok_s_stdev": 0.027843262019026455,
+          "ttft_s_median": 0.002387503001955338,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": {
+            "decode_tok_per_s": 38.08965175468332,
+            "mean_acceptance_length": 4.767857142857143,
+            "prefill_ms": 298.504928,
+            "snapshot_ms": 0.508247,
+            "tpot_ms": 26.25384990234375,
+            "ttft_ms": 299.013304
+          },
+          "text": "We need answer user: \"Write a clean, self-contained C++20 function `uint64_t prefix_xor_max(std::span<const uint64_t> arr)` that computes the maximum XOR of any prefix of `arr`. Include headers and a short complexity comment.\"\n\nNeed produce final code. Need think about semantics: maximum XOR of any prefix of arr. Prefix XORs: x0? Usually prefix of arr could be empty? \"any prefix\" maybe non-empty? Need decide. Function returns uint64_t. If arr empty? Need handle. Could return 0 for empty (empty prefix XOR 0) or maybe 0. Clean self-contained C++20. Include <cstdint>, <span>, maybe <algorithm>? We can just loop.\n\nCompute maximum XOR of any prefix: maintain running xor, max. For each element: running ^= element; if running > max update. If empty return 0. Complexity O(n) time O(1) space.\n\nNeed ensure C++20 std::span. Include <span>, <cstdint>. Maybe using uint64_t from <cstdint>. Function:\n\n#include <cstdint>\n#include <span>\n\nuint64_t prefix_xor_max(std::span<const uint6\u241e",
+          "repeat_identical": true
+        }
+      }
+    },
+    {
+      "name": "MT-Bench-JSON",
+      "engines": {
+        "sixi-pubud": {
+          "runs_decode_tok_s": [
+            64.38446977119862,
+            64.34695304418939,
+            64.54859358791667
+          ],
+          "runs_ttft_s": [
+            0.3056035399931716,
+            0.0029884830000810325,
+            0.0028216389910085127
+          ],
+          "decode_tok_s_median": 64.38446977119862,
+          "decode_tok_s_mean": 64.4266721344349,
+          "decode_tok_s_stdev": 0.08756143297024034,
+          "ttft_s_median": 0.0029884830000810325,
+          "completion_tokens": 234,
+          "finish_reason": "stop",
+          "metrics": {
+            "decode_tok_per_s": 64.65437000432762,
+            "mean_acceptance_length": 8.10344827586207,
+            "prefill_ms": 303.159981,
+            "snapshot_ms": 0.501109,
+            "tpot_ms": 15.466858619658119,
+            "ttft_ms": 303.661201
+          },
+          "text": "We need to respond to user: \"Output ONLY a valid JSON object describing a hypothetical inference engine with keys: \"engine\" (string), \"target_models\" (array of 2 strings), \"state_dtype\" (string), \"max_vram_gib\" (number), and \"speculative_decoders\" (array of strings).\"\n\nNeed output only valid JSON object. No extra. Ensure keys exactly. target_models array of 2 strings. speculative_decoders array of strings (could be empty? likely array of strings, maybe at least one? It says array of strings, no count. Could include one or more. max_vram_gib number. state_dtype string. engine string.\n\nNeed final only JSON. Ensure valid.\n\u241e{\n  \"engine\": \"HypotheticalInferenceEngine\",\n  \"target_models\": [\n    \"model-a\",\n    \"model-b\"\n  ],\n  \"state_dtype\": \"float16\",\n  \"max_vram_gib\": 80,\n  \"speculative_decoders\": [\n    \"draft-model\"\n  ]\n}",
+          "repeat_identical": true
+        }
+      }
+    },
+    {
+      "name": "RAG-Code-Refactor",
+      "engines": {
+        "sixi-pubud": {
+          "runs_decode_tok_s": [
+            41.77756561743291,
+            41.8496124320919,
+            41.86439398486608
+          ],
+          "runs_ttft_s": [
+            0.7484848050080473,
+            0.0048010800092015415,
+            0.003621537995059043
+          ],
+          "decode_tok_s_median": 41.8496124320919,
+          "decode_tok_s_mean": 41.83052401146363,
+          "decode_tok_s_stdev": 0.037930350199092806,
+          "ttft_s_median": 0.0048010800092015415,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": {
+            "decode_tok_per_s": 41.94048055496986,
+            "mean_acceptance_length": 5.244897959183674,
+            "prefill_ms": 745.154854,
+            "snapshot_ms": 0.713092,
+            "tpot_ms": 23.843312875,
+            "ttft_ms": 745.868076
+          },
+          "text": "We need answer user's request. Need produce final with refactored struct. Need add noexcept to every method and change float to double, keeping all names and comments identical. There are no comments. Need likely change float min_latency_ms to double, max to double, record_request parameter float latency_ms to double latency_ms? \"changing float to double\" likely all float types. Also literals 0.0f to 0.0? Since float to double, should use 0.0 maybe. Need keep names identical. Add noexcept to methods: void record_request(uint64_t tokens, double latency_ms) noexcept { ... } void reset_counters() noexcept { ... }. Need maybe include uint64_t? Not asked. Just output code. Ensure no extra? Could provide code block. Need be careful: if changing float to double, min_latency_ms = 0.0; max = 0.0; parameter double. No comments. Final concise.\n\u241e```cpp\nstruct TelemetryCounter {\n    uint64_t total_requests = 0;\n    uint64_t total_tokens = 0;\n    double min_latency_ms = 0.0;\n    double max_latency_ms = 0.0;\n",
+          "repeat_identical": true
+        }
+      }
+    },
+    {
+      "name": "Arch-Systems-TG",
+      "engines": {
+        "sixi-pubud": {
+          "runs_decode_tok_s": [
+            31.75767814951574,
+            31.711009160013084,
+            31.826972966559286
+          ],
+          "runs_ttft_s": [
+            0.2759831459989073,
+            0.0023284189956029877,
+            0.0029526490106945857
+          ],
+          "decode_tok_s_median": 31.75767814951574,
+          "decode_tok_s_mean": 31.76522009202937,
+          "decode_tok_s_stdev": 0.04764145099826665,
+          "ttft_s_median": 0.0029526490106945857,
+          "completion_tokens": 256,
+          "finish_reason": "length",
+          "metrics": {
+            "decode_tok_per_s": 31.880947757871002,
+            "mean_acceptance_length": 3.742857142857143,
+            "prefill_ms": 273.759146,
+            "snapshot_ms": 0.410023,
+            "tpot_ms": 31.366696109375,
+            "ttft_ms": 274.169253
+          },
+          "text": "We need answer user: \"Explain in 4 concise bullet points why hybrid Gated DeltaNet (linear recurrent state) + full-attention models need O(1) state checkpointing during speculative decoding compared to standard Transformer KV caches.\"\n\nNeed produce 4 concise bullets. Need understand technical context. Hybrid Gated DeltaNet + full attention. Gated DeltaNet is linear attention / linear recurrent state? It maintains recurrent state (matrix) updated per token, maybe O(d^2) state independent of sequence length. Full attention layers have KV cache growing O(L). Speculative decoding: draft model proposes tokens, target verifies; if rejected, need rollback to previous state. Standard Transformer KV caches: can checkpoint by saving KV cache at branch points? But KV cache size grows with sequence length, so checkpointing full KV at each speculative step is O(L) memory/time? Or maybe standard KV caches are append-only and can be truncated/rolled back by pointer? Let's parse.\n\nQuestion: \"why hybrid Gated DeltaNet (linear recurrent state) + full-attention models need O(1) state checkpointing during speculative decoding compared to standard Transformer KV caches.\" It asks explain in 4 concise bullet points why hybrid models need O(1) state checkpointing\u241e",
+          "repeat_identical": true
+        }
+      }
+    }
+  ]
+}

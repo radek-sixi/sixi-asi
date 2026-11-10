@@ -10,39 +10,6 @@ index bc83ea375..785ceaba2 100644
  #define GGML_CUDA_CC_RUBIN           1300
  #define GGML_CUDA_CC_OFFSET_AMD      0x1000000
  #define GGML_CUDA_CC_OFFSET_MTHREADS 0x0100000
-diff --git a/ggml/src/ggml-cuda/mmq-config-thor.cuh b/ggml/src/ggml-cuda/mmq-config-thor.cuh
-new file mode 100644
-index 000000000..d80b695ee
---- /dev/null
-+++ b/ggml/src/ggml-cuda/mmq-config-thor.cuh
-@@ -0,0 +1,27 @@
-+// Jetson AGX Thor (sm_110, 20 SMs, 273 GB/s LPDDR5X): MMQ shapes for the skinny batches of speculative verify.
-+// The Ampere table (256 threads, occupancy 1, I = 128) leaves one block of 8 warps per SM at J <= 24, which ncu shows
-+// latency bound (2 active / 0.55 eligible warps per scheduler, 29% of DRAM bandwidth). Build-time knobs for tuning.
-+// Sweep (Qwen3.8-27B Q4_K_M, one forward of 4 / 8 / 16 rows): 256x1 99.9/101.1/115.7 ms, 256x2 88.1/89.5/97.8,
-+// 128x4 86.4/87.8/93.8 (chosen), 128x8 86.2/87.5/95.0, 64x8 85.8/88.2/94.7. K_vram 512 is wrong (test-backend-ops FAIL).
-+#ifndef GGML_CUDA_THOR_MMQ_NT
-+#define GGML_CUDA_THOR_MMQ_NT 128
-+#endif
-+#ifndef GGML_CUDA_THOR_MMQ_OCC
-+#define GGML_CUDA_THOR_MMQ_OCC 4
-+#endif
-+#ifndef GGML_CUDA_THOR_MMQ_KV
-+#define GGML_CUDA_THOR_MMQ_KV MMQ_ITER_K
-+#endif
-+#ifndef GGML_CUDA_THOR_MMQ_JMAX
-+#define GGML_CUDA_THOR_MMQ_JMAX 24
-+#endif
-+
-+static constexpr __host__ __device__ ggml_cuda_mmq_config ggml_cuda_mmq_get_config_thor(ggml_type type, int J, bool fallback) {
-+    if ((type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q6_K) && J <= GGML_CUDA_THOR_MMQ_JMAX) {
-+        const ggml_cuda_mmq_config c = ggml_cuda_mmq_get_config_ampere(type, J, fallback);
-+        // one warp covers 16 rows of the tile at J < 48, so I = 16 * warps
-+        return ggml_cuda_mmq_config(c.type, GGML_CUDA_THOR_MMQ_NT, GGML_CUDA_THOR_MMQ_OCC, 16*(GGML_CUDA_THOR_MMQ_NT/32), c.J,
-+                                    c.sram_layout, GGML_CUDA_THOR_MMQ_KV, c.stream_k, c.fallback);
-+    }
-+    return ggml_cuda_mmq_get_config_ampere(type, J, fallback);
-+}
 diff --git a/ggml/src/ggml-cuda/mmq.cuh b/ggml/src/ggml-cuda/mmq.cuh
 index 4d67555ef..9ed3e228b 100644
 --- a/ggml/src/ggml-cuda/mmq.cuh
@@ -76,10 +43,10 @@ index 4d67555ef..9ed3e228b 100644
      // only src1 at Q4 uses the native FP4 config, higher precisions keep src1 at Q8_1
      if (prec_src1 != GGML_PREC_Q4 && (type == GGML_TYPE_NVFP4 || type == GGML_TYPE_MXFP4)) {
 diff --git a/ggml/src/ggml-cuda/mmvq.cu b/ggml/src/ggml-cuda/mmvq.cu
-index 8f79123af..12c959bc2 100644
+index 8f79123af..99a6fe127 100644
 --- a/ggml/src/ggml-cuda/mmvq.cu
 +++ b/ggml/src/ggml-cuda/mmvq.cu
-@@ -346,6 +346,24 @@ bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11) {
+@@ -346,6 +346,34 @@ bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11) {
                  return ne11 <= MMVQ_MAX_BATCH_SIZE;
          }
      }
@@ -90,6 +57,12 @@ index 8f79123af..12c959bc2 100644
 +            const char * e = getenv("GGML_CUDA_THOR_MMVQ_KQ_MAX");
 +            return e ? atoi(e) : 3;
 +        }();
++        // IQ4_XS / IQ4_NL / Q8_0 (the types of the UD dynamic mixes): UD-Q4_K_XL forward of 4 / 6 / 8 rows is
++        // 95 / 99 / 106 ms with the generic limit of 8 and 92 / 93 / 93 ms with 3. GGML_CUDA_THOR_MMVQ_OTHER_MAX overrides.
++        static const int other_max = [] {
++            const char * e = getenv("GGML_CUDA_THOR_MMVQ_OTHER_MAX");
++            return e ? atoi(e) : 3;
++        }();
 +        switch (type) {
 +            case GGML_TYPE_Q2_K:
 +            case GGML_TYPE_Q3_K:
@@ -97,6 +70,10 @@ index 8f79123af..12c959bc2 100644
 +            case GGML_TYPE_Q5_K:
 +            case GGML_TYPE_Q6_K:
 +                return ne11 <= kq_max;
++            case GGML_TYPE_IQ4_XS:
++            case GGML_TYPE_IQ4_NL:
++            case GGML_TYPE_Q8_0:
++                return ne11 <= other_max;
 +            default:
 +                return ne11 <= MMVQ_MAX_BATCH_SIZE;
 +        }
@@ -104,3 +81,56 @@ index 8f79123af..12c959bc2 100644
      if (GGML_CUDA_CC_IS_NVIDIA(cc) && cc == GGML_CUDA_CC_DGX_SPARK) {
          switch (type) { // tuned on DGX Spark GB10
              case GGML_TYPE_Q2_K:
+diff --git a/ggml/src/ggml-cuda/mmq-config-thor.cuh b/ggml/src/ggml-cuda/mmq-config-thor.cuh
+new file mode 100644
+index 000000000..59f5ecc52
+--- /dev/null
++++ b/ggml/src/ggml-cuda/mmq-config-thor.cuh
+@@ -0,0 +1,47 @@
++// Jetson AGX Thor (sm_110, 20 SMs, 273 GB/s LPDDR5X): MMQ shapes for the skinny batches of speculative verify.
++// The Ampere table (256 threads, occupancy 1, I = 128) leaves one block of 8 warps per SM at J <= 24, which ncu shows
++// latency bound (2 active / 0.55 eligible warps per scheduler, 29% of DRAM bandwidth). Build-time knobs for tuning.
++// Sweep (Qwen3.8-27B Q4_K_M, one forward of 4 / 8 / 16 rows): 256x1 99.9/101.1/115.7 ms, 256x2 88.1/89.5/97.8,
++// 128x4 86.4/87.8/93.8 (chosen), 128x8 86.2/87.5/95.0, 64x8 85.8/88.2/94.7. K_vram 512 is wrong (test-backend-ops FAIL).
++// Wider batches: 32 rows 152 ms (256x1) -> 128 (256x2) -> 120 (128x4); 64 rows 204 -> 184 (256x2); 128 and 512 rows are
++// compute bound and keep the Ampere shape (occupancy 2 is neutral there, occupancy 3 halves the speed).
++// Tried without gain (16 rows, 94.4 ms): hoisting all tile loads before their first use (93.8), 8- or 16-byte loads per
++// thread (99.2 / 99.4), prefetching the next tile during the compute phase (108.5).
++#ifndef GGML_CUDA_THOR_MMQ_NT
++#define GGML_CUDA_THOR_MMQ_NT 128
++#endif
++#ifndef GGML_CUDA_THOR_MMQ_OCC
++#define GGML_CUDA_THOR_MMQ_OCC 4
++#endif
++#ifndef GGML_CUDA_THOR_MMQ_KV
++#define GGML_CUDA_THOR_MMQ_KV MMQ_ITER_K
++#endif
++#ifndef GGML_CUDA_THOR_MMQ_BIG_OCC
++#define GGML_CUDA_THOR_MMQ_BIG_OCC 2
++#endif
++#ifndef GGML_CUDA_THOR_MMQ_JMAX
++#define GGML_CUDA_THOR_MMQ_JMAX 40
++#endif
++
++// Quant types that take the skinny shape: the k-quants of Q4_K_M plus the types of the "UD" dynamic mixes
++// (Q5_K, IQ4_XS, IQ4_NL, Q8_0), which otherwise leave ~2/3 of a UD-Q4_K_XL forward on the Ampere shape.
++static constexpr __host__ __device__ bool ggml_cuda_mmq_thor_skinny_type(ggml_type type) {
++    return type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q5_K || type == GGML_TYPE_Q6_K ||
++           type == GGML_TYPE_IQ4_XS || type == GGML_TYPE_IQ4_NL || type == GGML_TYPE_Q8_0;
++}
++
++static constexpr __host__ __device__ ggml_cuda_mmq_config ggml_cuda_mmq_get_config_thor(ggml_type type, int J, bool fallback) {
++    if (ggml_cuda_mmq_thor_skinny_type(type) && J <= GGML_CUDA_THOR_MMQ_JMAX) {
++        const ggml_cuda_mmq_config c = ggml_cuda_mmq_get_config_ampere(type, J, fallback);
++        // one warp covers 16 rows of the tile at J < 48, so I = 16 * warps
++        return ggml_cuda_mmq_config(c.type, GGML_CUDA_THOR_MMQ_NT, GGML_CUDA_THOR_MMQ_OCC, 16*(GGML_CUDA_THOR_MMQ_NT/32), c.J,
++                                    c.sram_layout, GGML_CUDA_THOR_MMQ_KV, c.stream_k, c.fallback);
++    }
++#if GGML_CUDA_THOR_MMQ_BIG_OCC > 1
++    if (ggml_cuda_mmq_thor_skinny_type(type) && J <= 64) {
++        const ggml_cuda_mmq_config c = ggml_cuda_mmq_get_config_ampere(type, J, fallback);
++        return ggml_cuda_mmq_config(c.type, c.nthreads, GGML_CUDA_THOR_MMQ_BIG_OCC, c.I, c.J, c.sram_layout, c.K_vram, c.stream_k, c.fallback);
++    }
++#endif
++    return ggml_cuda_mmq_get_config_ampere(type, J, fallback);
++}

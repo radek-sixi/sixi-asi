@@ -1,0 +1,630 @@
+{
+  "config": {
+    "engines": "sixi-udxl=http://127.0.0.1:8091",
+    "tasks": "humaneval",
+    "n_gsm": 80,
+    "n_he": 60,
+    "seed": 1234,
+    "max_tokens": 8192,
+    "temperature": 0.0,
+    "effort": "low",
+    "out": "he_udxl.json"
+  },
+  "engines": {
+    "sixi-udxl": {
+      "tasks": {
+        "humaneval": {
+          "n": 60,
+          "passed": 56,
+          "pass_at_1": 0.9333333333333333,
+          "mean_reasoning_tokens": 556.0666666666667,
+          "mean_completion_tokens": 770.6166666666667,
+          "mean_wall_s": 15.310135479233091,
+          "tok_s": 50.333758816957776,
+          "details": [
+            {
+              "i": 0,
+              "task_id": "HumanEval/82",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 283,
+              "completion_tokens": 452,
+              "wall_s": 9.83
+            },
+            {
+              "i": 1,
+              "task_id": "HumanEval/115",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 443,
+              "completion_tokens": 818,
+              "wall_s": 17.8
+            },
+            {
+              "i": 2,
+              "task_id": "HumanEval/92",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 612,
+              "completion_tokens": 799,
+              "wall_s": 19.66
+            },
+            {
+              "i": 3,
+              "task_id": "HumanEval/161",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 199,
+              "completion_tokens": 362,
+              "wall_s": 7.95
+            },
+            {
+              "i": 4,
+              "task_id": "HumanEval/47",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 606,
+              "completion_tokens": 751,
+              "wall_s": 17.83
+            },
+            {
+              "i": 5,
+              "task_id": "HumanEval/51",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 233,
+              "completion_tokens": 398,
+              "wall_s": 8.88
+            },
+            {
+              "i": 6,
+              "task_id": "HumanEval/50",
+              "ok": false,
+              "err": "ost recent call last):\n  File \"/tmp/tmp81e9xr92/prog.py\", line 28, in <module>\n    check(decode_shift)\n  File \"/tmp/tmp81e9xr92/prog.py\", line 23, in check\n    encoded_str = encode_shift(str)\n                  ^^^^^^^^^^^^\nNameError: name 'encode_shift' is not defined. Did you mean: 'decode_shift'?\n",
+              "finish": "stop",
+              "reasoning_tokens": 157,
+              "completion_tokens": 226,
+              "wall_s": 6.52
+            },
+            {
+              "i": 7,
+              "task_id": "HumanEval/146",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 574,
+              "completion_tokens": 782,
+              "wall_s": 16.78
+            },
+            {
+              "i": 8,
+              "task_id": "HumanEval/36",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 761,
+              "completion_tokens": 903,
+              "wall_s": 19.78
+            },
+            {
+              "i": 9,
+              "task_id": "HumanEval/109",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 875,
+              "completion_tokens": 1244,
+              "wall_s": 30.58
+            },
+            {
+              "i": 10,
+              "task_id": "HumanEval/81",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 471,
+              "completion_tokens": 1001,
+              "wall_s": 18.92
+            },
+            {
+              "i": 11,
+              "task_id": "HumanEval/30",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 69,
+              "completion_tokens": 208,
+              "wall_s": 4.87
+            },
+            {
+              "i": 12,
+              "task_id": "HumanEval/61",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 288,
+              "completion_tokens": 444,
+              "wall_s": 10.71
+            },
+            {
+              "i": 13,
+              "task_id": "HumanEval/105",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 477,
+              "completion_tokens": 880,
+              "wall_s": 17.68
+            },
+            {
+              "i": 14,
+              "task_id": "HumanEval/144",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 532,
+              "completion_tokens": 751,
+              "wall_s": 16.19
+            },
+            {
+              "i": 15,
+              "task_id": "HumanEval/95",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 560,
+              "completion_tokens": 820,
+              "wall_s": 17.36
+            },
+            {
+              "i": 16,
+              "task_id": "HumanEval/45",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 103,
+              "completion_tokens": 161,
+              "wall_s": 4.36
+            },
+            {
+              "i": 17,
+              "task_id": "HumanEval/87",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 557,
+              "completion_tokens": 896,
+              "wall_s": 19.36
+            },
+            {
+              "i": 18,
+              "task_id": "HumanEval/132",
+              "ok": false,
+              "err": "Traceback (most recent call last):\n  File \"/tmp/tmpw1nrfclx/prog.py\", line 49, in <module>\n    check(is_nested)\n  File \"/tmp/tmpw1nrfclx/prog.py\", line 37, in check\n    assert candidate('[[]') == False\n           ^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError\n",
+              "finish": "stop",
+              "reasoning_tokens": 1004,
+              "completion_tokens": 1202,
+              "wall_s": 31.55
+            },
+            {
+              "i": 19,
+              "task_id": "HumanEval/158",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 632,
+              "completion_tokens": 773,
+              "wall_s": 16.88
+            },
+            {
+              "i": 20,
+              "task_id": "HumanEval/32",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 1365,
+              "completion_tokens": 1849,
+              "wall_s": 40.73
+            },
+            {
+              "i": 21,
+              "task_id": "HumanEval/73",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 350,
+              "completion_tokens": 560,
+              "wall_s": 12.02
+            },
+            {
+              "i": 22,
+              "task_id": "HumanEval/96",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 404,
+              "completion_tokens": 645,
+              "wall_s": 13.56
+            },
+            {
+              "i": 23,
+              "task_id": "HumanEval/40",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 361,
+              "completion_tokens": 596,
+              "wall_s": 13.92
+            },
+            {
+              "i": 24,
+              "task_id": "HumanEval/74",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 384,
+              "completion_tokens": 639,
+              "wall_s": 12.57
+            },
+            {
+              "i": 25,
+              "task_id": "HumanEval/145",
+              "ok": false,
+              "err": "all last):\n  File \"/tmp/tmpwfk4e97f/prog.py\", line 32, in <module>\n    check(order_by_points)\n  File \"/tmp/tmpwfk4e97f/prog.py\", line 20, in check\n    assert candidate([1, 11, -1, -11, -12]) == [-1, -11, 1, -12, 11]\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError\n",
+              "finish": "stop",
+              "reasoning_tokens": 4896,
+              "completion_tokens": 5046,
+              "wall_s": 126.59
+            },
+            {
+              "i": 26,
+              "task_id": "HumanEval/64",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 394,
+              "completion_tokens": 586,
+              "wall_s": 12.5
+            },
+            {
+              "i": 27,
+              "task_id": "HumanEval/52",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 119,
+              "completion_tokens": 219,
+              "wall_s": 5.72
+            },
+            {
+              "i": 28,
+              "task_id": "HumanEval/70",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 260,
+              "completion_tokens": 451,
+              "wall_s": 9.62
+            },
+            {
+              "i": 29,
+              "task_id": "HumanEval/91",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 463,
+              "completion_tokens": 639,
+              "wall_s": 16.29
+            },
+            {
+              "i": 30,
+              "task_id": "HumanEval/57",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 338,
+              "completion_tokens": 482,
+              "wall_s": 11.02
+            },
+            {
+              "i": 31,
+              "task_id": "HumanEval/148",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 385,
+              "completion_tokens": 725,
+              "wall_s": 15.05
+            },
+            {
+              "i": 32,
+              "task_id": "HumanEval/94",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 1552,
+              "completion_tokens": 2007,
+              "wall_s": 29.78
+            },
+            {
+              "i": 33,
+              "task_id": "HumanEval/98",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 334,
+              "completion_tokens": 452,
+              "wall_s": 5.41
+            },
+            {
+              "i": 34,
+              "task_id": "HumanEval/13",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 275,
+              "completion_tokens": 382,
+              "wall_s": 5.28
+            },
+            {
+              "i": 35,
+              "task_id": "HumanEval/129",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 1255,
+              "completion_tokens": 1919,
+              "wall_s": 37.77
+            },
+            {
+              "i": 36,
+              "task_id": "HumanEval/101",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 271,
+              "completion_tokens": 403,
+              "wall_s": 7.78
+            },
+            {
+              "i": 37,
+              "task_id": "HumanEval/151",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 650,
+              "completion_tokens": 840,
+              "wall_s": 15.81
+            },
+            {
+              "i": 38,
+              "task_id": "HumanEval/28",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 39,
+              "completion_tokens": 109,
+              "wall_s": 1.46
+            },
+            {
+              "i": 39,
+              "task_id": "HumanEval/103",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 460,
+              "completion_tokens": 648,
+              "wall_s": 9.39
+            },
+            {
+              "i": 40,
+              "task_id": "HumanEval/102",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 325,
+              "completion_tokens": 473,
+              "wall_s": 8.4
+            },
+            {
+              "i": 41,
+              "task_id": "HumanEval/136",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 297,
+              "completion_tokens": 510,
+              "wall_s": 5.92
+            },
+            {
+              "i": 42,
+              "task_id": "HumanEval/117",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 685,
+              "completion_tokens": 955,
+              "wall_s": 14.79
+            },
+            {
+              "i": 43,
+              "task_id": "HumanEval/10",
+              "ok": false,
+              "err": "p/tmpdgrzqz4i/prog.py\", line 31, in check\n    assert candidate('x') == 'x'\n           ^^^^^^^^^^^^^^\n  File \"/tmp/tmpdgrzqz4i/prog.py\", line 16, in make_palindrome\n    if is_palindrome(string[i:]):\n       ^^^^^^^^^^^^^\nNameError: name 'is_palindrome' is not defined. Did you mean: 'make_palindrome'?\n",
+              "finish": "stop",
+              "reasoning_tokens": 871,
+              "completion_tokens": 1028,
+              "wall_s": 18.46
+            },
+            {
+              "i": 44,
+              "task_id": "HumanEval/76",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 885,
+              "completion_tokens": 1088,
+              "wall_s": 17.31
+            },
+            {
+              "i": 45,
+              "task_id": "HumanEval/55",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 237,
+              "completion_tokens": 363,
+              "wall_s": 4.69
+            },
+            {
+              "i": 46,
+              "task_id": "HumanEval/93",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 793,
+              "completion_tokens": 980,
+              "wall_s": 13.43
+            },
+            {
+              "i": 47,
+              "task_id": "HumanEval/12",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 216,
+              "completion_tokens": 344,
+              "wall_s": 5.63
+            },
+            {
+              "i": 48,
+              "task_id": "HumanEval/41",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 251,
+              "completion_tokens": 414,
+              "wall_s": 8.07
+            },
+            {
+              "i": 49,
+              "task_id": "HumanEval/134",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 421,
+              "completion_tokens": 612,
+              "wall_s": 11.64
+            },
+            {
+              "i": 50,
+              "task_id": "HumanEval/114",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 426,
+              "completion_tokens": 579,
+              "wall_s": 8.09
+            },
+            {
+              "i": 51,
+              "task_id": "HumanEval/24",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 486,
+              "completion_tokens": 582,
+              "wall_s": 10.46
+            },
+            {
+              "i": 52,
+              "task_id": "HumanEval/126",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 616,
+              "completion_tokens": 939,
+              "wall_s": 13.92
+            },
+            {
+              "i": 53,
+              "task_id": "HumanEval/54",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 416,
+              "completion_tokens": 577,
+              "wall_s": 8.63
+            },
+            {
+              "i": 54,
+              "task_id": "HumanEval/89",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 705,
+              "completion_tokens": 904,
+              "wall_s": 12.18
+            },
+            {
+              "i": 55,
+              "task_id": "HumanEval/107",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 376,
+              "completion_tokens": 683,
+              "wall_s": 8.43
+            },
+            {
+              "i": 56,
+              "task_id": "HumanEval/33",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 572,
+              "completion_tokens": 791,
+              "wall_s": 11.0
+            },
+            {
+              "i": 57,
+              "task_id": "HumanEval/152",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 107,
+              "completion_tokens": 364,
+              "wall_s": 5.86
+            },
+            {
+              "i": 58,
+              "task_id": "HumanEval/62",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 311,
+              "completion_tokens": 447,
+              "wall_s": 6.6
+            },
+            {
+              "i": 59,
+              "task_id": "HumanEval/100",
+              "ok": true,
+              "err": "",
+              "finish": "stop",
+              "reasoning_tokens": 377,
+              "completion_tokens": 536,
+              "wall_s": 9.36
+            }
+          ]
+        }
+      }
+    }
+  }
+}

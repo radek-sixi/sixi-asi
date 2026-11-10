@@ -1,0 +1,830 @@
+{
+  "config": {
+    "engines": "sixi-udxl=http://127.0.0.1:8091",
+    "tasks": "gsm8k",
+    "n_gsm": 80,
+    "n_he": 60,
+    "seed": 1234,
+    "max_tokens": 8192,
+    "temperature": 0.0,
+    "effort": "low",
+    "out": "gsm_udxl.json"
+  },
+  "engines": {
+    "sixi-udxl": {
+      "tasks": {
+        "gsm8k": {
+          "n": 80,
+          "correct": 76,
+          "accuracy": 0.95,
+          "mean_reasoning_tokens": 186.95,
+          "mean_completion_tokens": 326.425,
+          "mean_wall_s": 7.801289746162729,
+          "tok_s": 41.84244024016167,
+          "details": [
+            {
+              "i": 0,
+              "ok": true,
+              "pred": "480",
+              "gold": "480",
+              "finish": "stop",
+              "reasoning_tokens": 117,
+              "completion_tokens": 225,
+              "wall_s": 6.56
+            },
+            {
+              "i": 1,
+              "ok": true,
+              "pred": "29",
+              "gold": "29",
+              "finish": "stop",
+              "reasoning_tokens": 164,
+              "completion_tokens": 326,
+              "wall_s": 8.08
+            },
+            {
+              "i": 2,
+              "ok": true,
+              "pred": "50",
+              "gold": "50",
+              "finish": "stop",
+              "reasoning_tokens": 108,
+              "completion_tokens": 194,
+              "wall_s": 5.04
+            },
+            {
+              "i": 3,
+              "ok": true,
+              "pred": "2100",
+              "gold": "2100",
+              "finish": "stop",
+              "reasoning_tokens": 158,
+              "completion_tokens": 321,
+              "wall_s": 7.17
+            },
+            {
+              "i": 4,
+              "ok": true,
+              "pred": "43500",
+              "gold": "43500",
+              "finish": "stop",
+              "reasoning_tokens": 663,
+              "completion_tokens": 879,
+              "wall_s": 19.75
+            },
+            {
+              "i": 5,
+              "ok": true,
+              "pred": "31",
+              "gold": "31",
+              "finish": "stop",
+              "reasoning_tokens": 182,
+              "completion_tokens": 336,
+              "wall_s": 7.98
+            },
+            {
+              "i": 6,
+              "ok": true,
+              "pred": "240",
+              "gold": "240",
+              "finish": "stop",
+              "reasoning_tokens": 115,
+              "completion_tokens": 208,
+              "wall_s": 5.49
+            },
+            {
+              "i": 7,
+              "ok": true,
+              "pred": "5",
+              "gold": "5",
+              "finish": "stop",
+              "reasoning_tokens": 117,
+              "completion_tokens": 227,
+              "wall_s": 5.11
+            },
+            {
+              "i": 8,
+              "ok": true,
+              "pred": "20",
+              "gold": "20",
+              "finish": "stop",
+              "reasoning_tokens": 194,
+              "completion_tokens": 421,
+              "wall_s": 9.06
+            },
+            {
+              "i": 9,
+              "ok": true,
+              "pred": "130000",
+              "gold": "130000",
+              "finish": "stop",
+              "reasoning_tokens": 119,
+              "completion_tokens": 229,
+              "wall_s": 5.86
+            },
+            {
+              "i": 10,
+              "ok": true,
+              "pred": "80",
+              "gold": "80",
+              "finish": "stop",
+              "reasoning_tokens": 92,
+              "completion_tokens": 183,
+              "wall_s": 5.54
+            },
+            {
+              "i": 11,
+              "ok": true,
+              "pred": "8",
+              "gold": "8",
+              "finish": "stop",
+              "reasoning_tokens": 95,
+              "completion_tokens": 174,
+              "wall_s": 3.99
+            },
+            {
+              "i": 12,
+              "ok": true,
+              "pred": "48",
+              "gold": "48",
+              "finish": "stop",
+              "reasoning_tokens": 192,
+              "completion_tokens": 351,
+              "wall_s": 8.54
+            },
+            {
+              "i": 13,
+              "ok": true,
+              "pred": "296",
+              "gold": "296",
+              "finish": "stop",
+              "reasoning_tokens": 134,
+              "completion_tokens": 248,
+              "wall_s": 5.51
+            },
+            {
+              "i": 14,
+              "ok": true,
+              "pred": "15",
+              "gold": "15",
+              "finish": "stop",
+              "reasoning_tokens": 128,
+              "completion_tokens": 272,
+              "wall_s": 6.24
+            },
+            {
+              "i": 15,
+              "ok": true,
+              "pred": "800",
+              "gold": "800",
+              "finish": "stop",
+              "reasoning_tokens": 180,
+              "completion_tokens": 385,
+              "wall_s": 7.65
+            },
+            {
+              "i": 16,
+              "ok": false,
+              "pred": "44",
+              "gold": "104",
+              "finish": "stop",
+              "reasoning_tokens": 841,
+              "completion_tokens": 1025,
+              "wall_s": 26.86
+            },
+            {
+              "i": 17,
+              "ok": true,
+              "pred": "1",
+              "gold": "1",
+              "finish": "stop",
+              "reasoning_tokens": 152,
+              "completion_tokens": 290,
+              "wall_s": 6.5
+            },
+            {
+              "i": 18,
+              "ok": true,
+              "pred": "2",
+              "gold": "2",
+              "finish": "stop",
+              "reasoning_tokens": 148,
+              "completion_tokens": 285,
+              "wall_s": 6.57
+            },
+            {
+              "i": 19,
+              "ok": true,
+              "pred": "11",
+              "gold": "11",
+              "finish": "stop",
+              "reasoning_tokens": 103,
+              "completion_tokens": 245,
+              "wall_s": 5.33
+            },
+            {
+              "i": 20,
+              "ok": true,
+              "pred": "54",
+              "gold": "54",
+              "finish": "stop",
+              "reasoning_tokens": 149,
+              "completion_tokens": 317,
+              "wall_s": 7.17
+            },
+            {
+              "i": 21,
+              "ok": true,
+              "pred": "5",
+              "gold": "5",
+              "finish": "stop",
+              "reasoning_tokens": 228,
+              "completion_tokens": 443,
+              "wall_s": 10.85
+            },
+            {
+              "i": 22,
+              "ok": true,
+              "pred": "27",
+              "gold": "27",
+              "finish": "stop",
+              "reasoning_tokens": 77,
+              "completion_tokens": 150,
+              "wall_s": 3.42
+            },
+            {
+              "i": 23,
+              "ok": true,
+              "pred": "96",
+              "gold": "96",
+              "finish": "stop",
+              "reasoning_tokens": 174,
+              "completion_tokens": 318,
+              "wall_s": 7.56
+            },
+            {
+              "i": 24,
+              "ok": true,
+              "pred": "90",
+              "gold": "90",
+              "finish": "stop",
+              "reasoning_tokens": 86,
+              "completion_tokens": 163,
+              "wall_s": 3.95
+            },
+            {
+              "i": 25,
+              "ok": false,
+              "pred": "1800",
+              "gold": "360",
+              "finish": "stop",
+              "reasoning_tokens": 196,
+              "completion_tokens": 376,
+              "wall_s": 8.62
+            },
+            {
+              "i": 26,
+              "ok": true,
+              "pred": "30",
+              "gold": "30",
+              "finish": "stop",
+              "reasoning_tokens": 158,
+              "completion_tokens": 351,
+              "wall_s": 8.34
+            },
+            {
+              "i": 27,
+              "ok": true,
+              "pred": "15",
+              "gold": "15",
+              "finish": "stop",
+              "reasoning_tokens": 107,
+              "completion_tokens": 208,
+              "wall_s": 4.59
+            },
+            {
+              "i": 28,
+              "ok": true,
+              "pred": "3",
+              "gold": "3",
+              "finish": "stop",
+              "reasoning_tokens": 252,
+              "completion_tokens": 461,
+              "wall_s": 9.76
+            },
+            {
+              "i": 29,
+              "ok": true,
+              "pred": "6",
+              "gold": "6",
+              "finish": "stop",
+              "reasoning_tokens": 98,
+              "completion_tokens": 166,
+              "wall_s": 4.04
+            },
+            {
+              "i": 30,
+              "ok": true,
+              "pred": "43",
+              "gold": "43",
+              "finish": "stop",
+              "reasoning_tokens": 125,
+              "completion_tokens": 283,
+              "wall_s": 6.02
+            },
+            {
+              "i": 31,
+              "ok": true,
+              "pred": "2325",
+              "gold": "2325",
+              "finish": "stop",
+              "reasoning_tokens": 100,
+              "completion_tokens": 197,
+              "wall_s": 4.72
+            },
+            {
+              "i": 32,
+              "ok": false,
+              "pred": "10",
+              "gold": "18",
+              "finish": "stop",
+              "reasoning_tokens": 101,
+              "completion_tokens": 200,
+              "wall_s": 6.2
+            },
+            {
+              "i": 33,
+              "ok": true,
+              "pred": "1000",
+              "gold": "1000",
+              "finish": "stop",
+              "reasoning_tokens": 106,
+              "completion_tokens": 204,
+              "wall_s": 4.72
+            },
+            {
+              "i": 34,
+              "ok": true,
+              "pred": "20",
+              "gold": "20",
+              "finish": "stop",
+              "reasoning_tokens": 115,
+              "completion_tokens": 203,
+              "wall_s": 4.6
+            },
+            {
+              "i": 35,
+              "ok": true,
+              "pred": "10",
+              "gold": "10",
+              "finish": "stop",
+              "reasoning_tokens": 111,
+              "completion_tokens": 259,
+              "wall_s": 5.98
+            },
+            {
+              "i": 36,
+              "ok": true,
+              "pred": "53",
+              "gold": "53",
+              "finish": "stop",
+              "reasoning_tokens": 88,
+              "completion_tokens": 145,
+              "wall_s": 4.08
+            },
+            {
+              "i": 37,
+              "ok": true,
+              "pred": "50",
+              "gold": "50",
+              "finish": "stop",
+              "reasoning_tokens": 179,
+              "completion_tokens": 285,
+              "wall_s": 6.9
+            },
+            {
+              "i": 38,
+              "ok": true,
+              "pred": "13",
+              "gold": "13",
+              "finish": "stop",
+              "reasoning_tokens": 223,
+              "completion_tokens": 512,
+              "wall_s": 11.29
+            },
+            {
+              "i": 39,
+              "ok": true,
+              "pred": "25",
+              "gold": "25",
+              "finish": "stop",
+              "reasoning_tokens": 186,
+              "completion_tokens": 363,
+              "wall_s": 8.78
+            },
+            {
+              "i": 40,
+              "ok": true,
+              "pred": "298",
+              "gold": "298",
+              "finish": "stop",
+              "reasoning_tokens": 207,
+              "completion_tokens": 379,
+              "wall_s": 7.73
+            },
+            {
+              "i": 41,
+              "ok": true,
+              "pred": "68",
+              "gold": "68",
+              "finish": "stop",
+              "reasoning_tokens": 175,
+              "completion_tokens": 358,
+              "wall_s": 8.4
+            },
+            {
+              "i": 42,
+              "ok": true,
+              "pred": "20",
+              "gold": "20",
+              "finish": "stop",
+              "reasoning_tokens": 115,
+              "completion_tokens": 224,
+              "wall_s": 6.14
+            },
+            {
+              "i": 43,
+              "ok": true,
+              "pred": "14000",
+              "gold": "14000",
+              "finish": "stop",
+              "reasoning_tokens": 175,
+              "completion_tokens": 358,
+              "wall_s": 7.49
+            },
+            {
+              "i": 44,
+              "ok": true,
+              "pred": "93",
+              "gold": "93",
+              "finish": "stop",
+              "reasoning_tokens": 118,
+              "completion_tokens": 203,
+              "wall_s": 5.34
+            },
+            {
+              "i": 45,
+              "ok": true,
+              "pred": "240",
+              "gold": "240",
+              "finish": "stop",
+              "reasoning_tokens": 101,
+              "completion_tokens": 200,
+              "wall_s": 4.99
+            },
+            {
+              "i": 46,
+              "ok": true,
+              "pred": "2",
+              "gold": "2",
+              "finish": "stop",
+              "reasoning_tokens": 132,
+              "completion_tokens": 291,
+              "wall_s": 7.14
+            },
+            {
+              "i": 47,
+              "ok": true,
+              "pred": "52",
+              "gold": "52",
+              "finish": "stop",
+              "reasoning_tokens": 97,
+              "completion_tokens": 216,
+              "wall_s": 5.13
+            },
+            {
+              "i": 48,
+              "ok": true,
+              "pred": "2",
+              "gold": "2",
+              "finish": "stop",
+              "reasoning_tokens": 128,
+              "completion_tokens": 259,
+              "wall_s": 6.02
+            },
+            {
+              "i": 49,
+              "ok": true,
+              "pred": "32",
+              "gold": "32",
+              "finish": "stop",
+              "reasoning_tokens": 787,
+              "completion_tokens": 929,
+              "wall_s": 24.89
+            },
+            {
+              "i": 50,
+              "ok": true,
+              "pred": "195",
+              "gold": "195",
+              "finish": "stop",
+              "reasoning_tokens": 158,
+              "completion_tokens": 306,
+              "wall_s": 6.96
+            },
+            {
+              "i": 51,
+              "ok": true,
+              "pred": "11",
+              "gold": "11",
+              "finish": "stop",
+              "reasoning_tokens": 246,
+              "completion_tokens": 433,
+              "wall_s": 9.96
+            },
+            {
+              "i": 52,
+              "ok": true,
+              "pred": "80",
+              "gold": "80",
+              "finish": "stop",
+              "reasoning_tokens": 451,
+              "completion_tokens": 733,
+              "wall_s": 18.2
+            },
+            {
+              "i": 53,
+              "ok": true,
+              "pred": "6",
+              "gold": "6",
+              "finish": "stop",
+              "reasoning_tokens": 99,
+              "completion_tokens": 189,
+              "wall_s": 4.46
+            },
+            {
+              "i": 54,
+              "ok": true,
+              "pred": "17",
+              "gold": "17",
+              "finish": "stop",
+              "reasoning_tokens": 82,
+              "completion_tokens": 159,
+              "wall_s": 3.79
+            },
+            {
+              "i": 55,
+              "ok": true,
+              "pred": "3",
+              "gold": "3",
+              "finish": "stop",
+              "reasoning_tokens": 103,
+              "completion_tokens": 177,
+              "wall_s": 3.95
+            },
+            {
+              "i": 56,
+              "ok": true,
+              "pred": "480",
+              "gold": "480",
+              "finish": "stop",
+              "reasoning_tokens": 789,
+              "completion_tokens": 942,
+              "wall_s": 22.63
+            },
+            {
+              "i": 57,
+              "ok": true,
+              "pred": "4",
+              "gold": "4",
+              "finish": "stop",
+              "reasoning_tokens": 96,
+              "completion_tokens": 154,
+              "wall_s": 4.2
+            },
+            {
+              "i": 58,
+              "ok": true,
+              "pred": "9",
+              "gold": "9",
+              "finish": "stop",
+              "reasoning_tokens": 122,
+              "completion_tokens": 229,
+              "wall_s": 4.77
+            },
+            {
+              "i": 59,
+              "ok": true,
+              "pred": "410",
+              "gold": "410",
+              "finish": "stop",
+              "reasoning_tokens": 121,
+              "completion_tokens": 227,
+              "wall_s": 5.26
+            },
+            {
+              "i": 60,
+              "ok": true,
+              "pred": "75",
+              "gold": "75",
+              "finish": "stop",
+              "reasoning_tokens": 120,
+              "completion_tokens": 216,
+              "wall_s": 4.75
+            },
+            {
+              "i": 61,
+              "ok": true,
+              "pred": "9",
+              "gold": "9",
+              "finish": "stop",
+              "reasoning_tokens": 135,
+              "completion_tokens": 281,
+              "wall_s": 5.97
+            },
+            {
+              "i": 62,
+              "ok": true,
+              "pred": "70",
+              "gold": "70",
+              "finish": "stop",
+              "reasoning_tokens": 105,
+              "completion_tokens": 191,
+              "wall_s": 4.76
+            },
+            {
+              "i": 63,
+              "ok": true,
+              "pred": "180",
+              "gold": "180",
+              "finish": "stop",
+              "reasoning_tokens": 240,
+              "completion_tokens": 471,
+              "wall_s": 9.34
+            },
+            {
+              "i": 64,
+              "ok": true,
+              "pred": "7",
+              "gold": "7",
+              "finish": "stop",
+              "reasoning_tokens": 96,
+              "completion_tokens": 211,
+              "wall_s": 6.03
+            },
+            {
+              "i": 65,
+              "ok": true,
+              "pred": "16",
+              "gold": "16",
+              "finish": "stop",
+              "reasoning_tokens": 184,
+              "completion_tokens": 354,
+              "wall_s": 8.87
+            },
+            {
+              "i": 66,
+              "ok": true,
+              "pred": "18",
+              "gold": "18",
+              "finish": "stop",
+              "reasoning_tokens": 227,
+              "completion_tokens": 485,
+              "wall_s": 10.97
+            },
+            {
+              "i": 67,
+              "ok": true,
+              "pred": "60",
+              "gold": "60",
+              "finish": "stop",
+              "reasoning_tokens": 141,
+              "completion_tokens": 297,
+              "wall_s": 7.05
+            },
+            {
+              "i": 68,
+              "ok": true,
+              "pred": "4",
+              "gold": "4",
+              "finish": "stop",
+              "reasoning_tokens": 124,
+              "completion_tokens": 217,
+              "wall_s": 5.4
+            },
+            {
+              "i": 69,
+              "ok": true,
+              "pred": "81",
+              "gold": "81",
+              "finish": "stop",
+              "reasoning_tokens": 155,
+              "completion_tokens": 318,
+              "wall_s": 6.6
+            },
+            {
+              "i": 70,
+              "ok": true,
+              "pred": "1248",
+              "gold": "1248",
+              "finish": "stop",
+              "reasoning_tokens": 319,
+              "completion_tokens": 568,
+              "wall_s": 12.4
+            },
+            {
+              "i": 71,
+              "ok": true,
+              "pred": "1",
+              "gold": "1",
+              "finish": "stop",
+              "reasoning_tokens": 89,
+              "completion_tokens": 180,
+              "wall_s": 4.76
+            },
+            {
+              "i": 72,
+              "ok": true,
+              "pred": "10",
+              "gold": "10",
+              "finish": "stop",
+              "reasoning_tokens": 120,
+              "completion_tokens": 255,
+              "wall_s": 6.71
+            },
+            {
+              "i": 73,
+              "ok": true,
+              "pred": "5",
+              "gold": "5",
+              "finish": "stop",
+              "reasoning_tokens": 75,
+              "completion_tokens": 126,
+              "wall_s": 3.79
+            },
+            {
+              "i": 74,
+              "ok": true,
+              "pred": "9",
+              "gold": "9",
+              "finish": "stop",
+              "reasoning_tokens": 107,
+              "completion_tokens": 221,
+              "wall_s": 6.07
+            },
+            {
+              "i": 75,
+              "ok": true,
+              "pred": "23",
+              "gold": "23",
+              "finish": "stop",
+              "reasoning_tokens": 252,
+              "completion_tokens": 491,
+              "wall_s": 8.85
+            },
+            {
+              "i": 76,
+              "ok": true,
+              "pred": "2",
+              "gold": "2",
+              "finish": "stop",
+              "reasoning_tokens": 111,
+              "completion_tokens": 243,
+              "wall_s": 5.34
+            },
+            {
+              "i": 77,
+              "ok": true,
+              "pred": "18",
+              "gold": "18",
+              "finish": "stop",
+              "reasoning_tokens": 475,
+              "completion_tokens": 627,
+              "wall_s": 16.0
+            },
+            {
+              "i": 78,
+              "ok": false,
+              "pred": "12",
+              "gold": "13",
+              "finish": "stop",
+              "reasoning_tokens": 634,
+              "completion_tokens": 818,
+              "wall_s": 24.71
+            },
+            {
+              "i": 79,
+              "ok": true,
+              "pred": "288",
+              "gold": "288",
+              "finish": "stop",
+              "reasoning_tokens": 84,
+              "completion_tokens": 150,
+              "wall_s": 3.84
+            }
+          ]
+        }
+      }
+    }
+  }
+}

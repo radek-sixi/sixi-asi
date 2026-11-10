@@ -15,7 +15,10 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <condition_variable>
 #include <limits>
+#include <mutex>
+#include <thread>
 #include <numeric>
 #include <string_view>
 #include <unordered_set>
@@ -1310,7 +1313,6 @@ struct LlamaCppBackend::Impl {
     std::vector<void*> dep_handles;
     void* model = nullptr;
     void* ctx = nullptr;
-    void* ctx_sampler_chain = nullptr;
     void* ctx_mtp = nullptr;
     void* model_mtp = nullptr;          // separate MTP-head model (LoadOptions::mtp_model_path); nullptr when the MTP block is embedded
     void* mtp_sampler_chain = nullptr;
@@ -1336,13 +1338,161 @@ struct LlamaCppBackend::Impl {
     uint64_t n_vocab_dflash = 0;
     LlamaAbiVariant abi_variant = LlamaAbiVariant::Unknown;
     bool gpu_sampler_supported = false; // backend sampler chain API available and accepted at load
-    bool gpu_sampler_attached = false;
     int32_t eos_id = 2;
-    int32_t last_sampled_token = -1;
     LoadOptions opts{};
-    std::vector<int32_t> history_tokens;
-    std::vector<float> history_h_nextn;
-    size_t h_valid_from = 0; // first absolute position whose history_h_nextn row is trustworthy (after snapshot restore)
+
+    // Per-stream state. A stream is one live backend sequence (sequence id == stream index) with its own token
+    // history, drafter sync point and GPU sampler chain. The calling thread selects its stream with
+    // bind_stream(); the batch leader acts for other streams through ActAs while their threads wait in submit().
+    struct StreamState {
+        std::vector<int32_t> history_tokens;
+        std::vector<float> history_h_nextn;
+        size_t h_valid_from = 0; // first absolute position whose history_h_nextn row is trustworthy (after snapshot restore)
+        size_t mtp_synced_len = 0;
+        size_t dflash_synced_len = 0;
+        int32_t last_sampled_token = -1;
+        void* ctx_sampler_chain = nullptr;
+        bool gpu_sampler_attached = false;
+        bool generating = false;
+        // Pad rows of the last shared verify pass still present in the target memory and the drafter KV beyond
+        // history_tokens. They are removed by the stream's next rollback, or settled before its next pass: the
+        // recurrent snapshot ring allows one rollback per decoded batch, so pad removal and a draft rejection
+        // must be the same seq_rm.
+        size_t phys_extra = 0;
+    };
+    std::vector<StreamState> streams = std::vector<StreamState>(1);
+    uint32_t n_streams = 1;
+    static uint32_t& tls_stream() noexcept { static thread_local uint32_t s = 0; return s; }
+    uint32_t cur_stream() const noexcept { const uint32_t s = tls_stream(); return (s < streams.size()) ? s : 0u; }
+    StreamState& S() noexcept { return streams[cur_stream()]; }
+    const StreamState& S() const noexcept { return streams[cur_stream()]; }
+    int32_t seq() const noexcept { return static_cast<int32_t>(cur_stream()); }
+    struct ActAs {
+        uint32_t prev;
+        explicit ActAs(uint32_t s) noexcept : prev(tls_stream()) { tls_stream() = s; }
+        ~ActAs() { tls_stream() = prev; }
+    };
+
+    // GPU ownership: llama contexts are not thread-safe, so every call that touches them holds the (recursive)
+    // ownership flag. Batched ops queue in `pending`; one waiting thread becomes the leader, gathers the ops of
+    // all generating streams (bounded wait) and runs them in a single llama_decode.
+    struct BatchOp {
+        enum class Kind : uint8_t { Draft, Verify } kind = Kind::Verify;
+        uint32_t stream = 0;
+        const std::vector<int32_t>* tokens = nullptr;   // verify: rows to append to the stream
+        bool want_logits = false;                       // verify: full logits rows instead of GPU argmax ids
+        std::vector<int32_t> sampled;
+        std::vector<std::vector<float>> logits;
+        int32_t first_token = -1;                       // draft: anchor
+        uint32_t k = 0;                                 // draft: requested drafts
+        std::vector<int32_t> drafted;
+        Status st = Status::Ok();
+        bool done = false;
+    };
+    std::mutex q_mu;
+    std::condition_variable q_cv;
+    bool gpu_busy = false;
+    std::thread::id gpu_owner{};
+    uint32_t gpu_depth = 0;
+    bool leader_active = false;
+    uint32_t n_generating = 0;
+    std::vector<BatchOp*> pending;
+
+    void gpu_acquire() {
+        std::unique_lock<std::mutex> lk(q_mu);
+        const auto me = std::this_thread::get_id();
+        if (gpu_busy && gpu_owner == me) { ++gpu_depth; return; }
+        q_cv.wait(lk, [&] { return !gpu_busy; });
+        gpu_busy = true; gpu_owner = me; gpu_depth = 1;
+    }
+    void gpu_release() {
+        std::unique_lock<std::mutex> lk(q_mu);
+        if (gpu_depth > 0 && --gpu_depth == 0) {
+            gpu_busy = false; gpu_owner = std::thread::id{};
+            lk.unlock();
+            q_cv.notify_all();
+        }
+    }
+    struct GpuHold {
+        Impl* i;
+        explicit GpuHold(Impl* p) : i(p) { i->gpu_acquire(); }
+        ~GpuHold() { i->gpu_release(); }
+        GpuHold(const GpuHold&) = delete;
+        GpuHold& operator=(const GpuHold&) = delete;
+    };
+    // Between prefill chunks: hand the GPU to the generating streams for about as long as the chunk took
+    // (~1.5 ms per row on Thor), so a long document load in one stream halves the others' speed instead of
+    // stalling them for the whole prefill.
+    void gpu_yield(int32_t chunk_rows) {
+        std::unique_lock<std::mutex> lk(q_mu);
+        if (n_generating == 0 || gpu_depth != 1 || gpu_owner != std::this_thread::get_id()) return;
+        gpu_busy = false; gpu_owner = std::thread::id{}; gpu_depth = 0;
+        q_cv.notify_all();
+        const auto slice = std::chrono::milliseconds(std::clamp<int64_t>(static_cast<int64_t>(chunk_rows) * 3 / 2, 50, 2000));
+        q_cv.wait_for(lk, slice, [&] { return n_generating == 0; });
+        // not between a draft pass and its verify pass: a leader that is gathering ops goes first
+        q_cv.wait(lk, [&] { return !gpu_busy && !leader_active; });
+        gpu_busy = true; gpu_owner = std::this_thread::get_id(); gpu_depth = 1;
+    }
+    // Prefill chunk for the next decode: large chunks are the fastest (Thor: 2048 rows run at ~940 tok/s through
+    // dequantize + cuBLAS, 512 rows at ~650), but while other streams generate a chunk is also the longest they
+    // can be kept waiting, so it is capped at 512 rows then.
+    uint32_t prefill_chunk_now(uint32_t chunk_sz) {
+        std::lock_guard<std::mutex> lk(q_mu);
+        return (n_generating > 0) ? std::min<uint32_t>(chunk_sz, 512u) : chunk_sz;
+    }
+    static std::chrono::microseconds batch_window() noexcept {
+        static const long us = [] {
+            const char* e = std::getenv("SIXI_BATCH_WINDOW_US");
+            const long v = (e != nullptr && *e != '\0') ? std::atol(e) : 4000L;
+            return std::max(0L, v);
+        }();
+        return std::chrono::microseconds(us);
+    }
+    void run_group(std::vector<BatchOp*>& grp);   // defined after the class (needs the backend helpers)
+    void exec_verify_group(std::vector<BatchOp*>& grp);
+    void exec_draft_group(std::vector<BatchOp*>& grp);
+    Status settle_pads();
+
+    // Run one batched op for the calling thread's stream. A generating stream queues the op so that concurrent
+    // streams share one forward pass; otherwise the op runs alone.
+    void submit(BatchOp& op) {
+        op.stream = cur_stream();
+        if (!S().generating) {
+            GpuHold hold(this);
+            std::vector<BatchOp*> grp{&op};
+            run_group(grp);
+            op.done = true;
+            return;
+        }
+        std::unique_lock<std::mutex> lk(q_mu);
+        pending.push_back(&op);
+        q_cv.notify_all();
+        while (!op.done) {
+            if (leader_active) { q_cv.wait(lk); continue; }
+            leader_active = true;
+            q_cv.wait_for(lk, batch_window(), [&] { return pending.size() >= n_generating; });
+            q_cv.wait(lk, [&] { return !gpu_busy; });
+            gpu_busy = true; gpu_owner = std::this_thread::get_id(); gpu_depth = 1;
+            // Drafts first: a stream that drafted joins the verify batch a moment later
+            bool any_draft = false;
+            for (const BatchOp* o : pending) any_draft = any_draft || (o->kind == BatchOp::Kind::Draft);
+            const BatchOp::Kind kind = any_draft ? BatchOp::Kind::Draft : BatchOp::Kind::Verify;
+            std::vector<BatchOp*> grp;
+            for (auto it = pending.begin(); it != pending.end();) {
+                if ((*it)->kind == kind) { grp.push_back(*it); it = pending.erase(it); } else { ++it; }
+            }
+            lk.unlock();
+            run_group(grp);
+            lk.lock();
+            for (BatchOp* o : grp) o->done = true;
+            telemetry.batched_passes++;
+            telemetry.batched_ops += grp.size();
+            gpu_busy = false; gpu_owner = std::thread::id{}; gpu_depth = 0;
+            leader_active = false;
+            q_cv.notify_all();
+        }
+    }
 
     // Device-side snapshot slots: backend sequence ids 1..n hold copies of the live sequence 0
     struct DeviceSlot {
@@ -1355,8 +1505,6 @@ struct LlamaCppBackend::Impl {
     std::vector<DeviceSlot> device_slots;
     uint32_t n_seq_total = 1;
     std::vector<q8_1_fp32_block> latest_h_q8_1_blocks;
-    size_t mtp_synced_len = 0;
-    size_t dflash_synced_len = 0;
 
     // Runtime offload, PLE, Markov, and telemetry subsystems (P0.1 - P0.3)
     memory::PleTableManager ple_manager;
@@ -1470,14 +1618,15 @@ struct LlamaCppBackend::Impl {
             llama_model_free(model_mtp);
             model_mtp = nullptr;
         }
-        if (ctx_sampler_chain != nullptr) {
+        for (size_t si = 0; si < streams.size(); ++si) {
+            if (streams[si].ctx_sampler_chain == nullptr) continue;
             if (ctx != nullptr && llama_set_sampler != nullptr) {
-                (void)llama_set_sampler(ctx, 0, nullptr);
+                (void)llama_set_sampler(ctx, static_cast<int32_t>(si), nullptr);
             }
             if (llama_sampler_free != nullptr) {
-                llama_sampler_free(ctx_sampler_chain);
+                llama_sampler_free(streams[si].ctx_sampler_chain);
             }
-            ctx_sampler_chain = nullptr;
+            streams[si].ctx_sampler_chain = nullptr;
         }
         if (ctx != nullptr && llama_free != nullptr) {
             llama_free(ctx);
@@ -1505,17 +1654,30 @@ struct LlamaCppBackend::Impl {
         n_vocab_dflash = 0;
         abi_variant = LlamaAbiVariant::Unknown;
         gpu_sampler_supported = false;
-        gpu_sampler_attached = false;
-        last_sampled_token = -1;
-        history_tokens.clear();
-        history_h_nextn.clear();
-        h_valid_from = 0;
+        streams.assign(1, StreamState{});
+        n_streams = 1;
         latest_h_q8_1_blocks.clear();
-        mtp_synced_len = 0;
-        dflash_synced_len = 0;
         device_slots.clear();
         n_seq_total = 1;
         telemetry = RuntimeTelemetry{};
+    }
+
+    // Explicit positions + sequence id for a token batch of the bound stream (llama_batch_get_one implies
+    // sequence 0, which is only right with a single stream).
+    struct SeqArrays { std::vector<int32_t> pos, n_seq; std::vector<int32_t*> seq_ptr; int32_t seq_val = 0; };
+    void bind_batch_seq(LlamaBatchRaw& b, SeqArrays& a, size_t pos_start) {
+        if (n_streams <= 1) {
+            return;
+        }
+        const size_t n = static_cast<size_t>(std::max(0, b.n_tokens));
+        a.seq_val = seq();
+        a.pos.resize(n);
+        for (size_t i = 0; i < n; ++i) a.pos[i] = static_cast<int32_t>(pos_start + i);
+        a.n_seq.assign(n, 1);
+        a.seq_ptr.assign(n, &a.seq_val);
+        b.pos = a.pos.data();
+        b.n_seq_id = a.n_seq.data();
+        b.seq_id = a.seq_ptr.data();
     }
 
     // seq_rm / seq_cp across every context that holds per-sequence state
@@ -1532,6 +1694,10 @@ struct LlamaCppBackend::Impl {
     }
 
     void prefill_mtp_on_prompt_prefix() {
+        auto& history_tokens = S().history_tokens;
+        auto& history_h_nextn = S().history_h_nextn;
+        auto& mtp_synced_len = S().mtp_synced_len;
+        const size_t h_valid_from = S().h_valid_from;
         const size_t N = history_tokens.size();
         const size_t embd_dim = static_cast<size_t>(n_embd);
         if (ctx_mtp == nullptr || embd_dim == 0 || N <= 1 || mtp_synced_len >= N ||
@@ -1647,6 +1813,9 @@ struct LlamaCppBackend::Impl {
         if (count <= 0) {
             return;
         }
+        auto& history_tokens = S().history_tokens;
+        auto& history_h_nextn = S().history_h_nextn;
+        auto& dflash_synced_len = S().dflash_synced_len;
         if (ctx_mtp != nullptr && n_embd > 0 && llama_get_embeddings_nextn != nullptr) {
             const float* h_tgt = llama_get_embeddings_nextn(ctx);
             if (h_tgt != nullptr) {
@@ -1701,7 +1870,7 @@ struct LlamaCppBackend::Impl {
                 // One decode with the raw target features: the library projects (fc) and writes the draft KV cache
                 std::vector<int32_t> inject_pos = dflash_embd_positions(batch_pos_start, count);
                 std::vector<int32_t> inject_n_seq(static_cast<size_t>(count), 1);
-                int32_t seq_zero = 0;
+                int32_t seq_zero = seq();
                 std::vector<int32_t*> inject_seq_ptr(static_cast<size_t>(count), &seq_zero);
                 std::vector<int8_t> inject_logits(static_cast<size_t>(count), 0);
                 if (trace_prefill()) {
@@ -1733,7 +1902,7 @@ struct LlamaCppBackend::Impl {
                             inp_g, inp_g + static_cast<size_t>(count) * n_embd_dflash_dec);
                         std::vector<int32_t> inject_pos = dflash_embd_positions(batch_pos_start, count);
                         std::vector<int32_t> inject_n_seq(static_cast<size_t>(count), 1);
-                        int32_t seq_zero = 0;
+                        int32_t seq_zero = seq();
                         std::vector<int32_t*> inject_seq_ptr(static_cast<size_t>(count), &seq_zero);
                         std::vector<int8_t> inject_logits(static_cast<size_t>(count), 0);
                         LlamaBatchRaw inj_batch{};
@@ -1757,6 +1926,362 @@ LlamaCppBackend::LlamaCppBackend()
     : impl_(std::make_unique<Impl>()) {}
 
 LlamaCppBackend::~LlamaCppBackend() = default;
+
+// ---- batched multi-stream execution ------------------------------------------------------------
+
+void LlamaCppBackend::Impl::run_group(std::vector<BatchOp*>& grp) {
+    if (grp.empty()) {
+        return;
+    }
+    std::sort(grp.begin(), grp.end(), [](const BatchOp* a, const BatchOp* b) { return a->stream < b->stream; });
+    if (grp.front()->kind == BatchOp::Kind::Draft) {
+        exec_draft_group(grp);
+    } else {
+        exec_verify_group(grp);
+    }
+}
+
+Status LlamaCppBackend::Impl::settle_pads() {
+    auto& st = S();
+    if (st.phys_extra == 0) {
+        return Status::Ok();
+    }
+    st.phys_extra = 0;
+    const int32_t p0 = static_cast<int32_t>(st.history_tokens.size());
+    bool ok = llama_memory_seq_rm != nullptr;
+    if (ok) {
+        void* mem = llama_get_memory(ctx);
+        ok = mem != nullptr && llama_memory_seq_rm(mem, seq(), p0, -1);
+        if (ctx_dflash != nullptr) {
+            void* mem_dflash = llama_get_memory(ctx_dflash);
+            if (mem_dflash != nullptr) {
+                (void)llama_memory_seq_rm(mem_dflash, seq(), p0, -1);
+            }
+        }
+    }
+    return ok ? Status::Ok()
+              : Status::Error(ErrorCode::BackendError, "llama_memory_seq_rm failed to remove pad rows at position " + std::to_string(p0));
+}
+
+// One forward pass over the verify rows of several streams. Rows are laid out stream-major in ascending sequence
+// order and every stream is padded to the same row count (the pad repeats its last token and is rolled back right
+// after the pass): llama.cpp only keeps sequences in one ubatch when they contribute equally many tokens, and a
+// second ubatch costs a second read of the weights (~85 ms on Thor) while 16 extra rows cost ~25 ms.
+void LlamaCppBackend::Impl::exec_verify_group(std::vector<BatchOp*>& grp) {
+    struct Span { BatchOp* op; size_t off; size_t real; size_t rows; size_t N; };
+    size_t R = 0;
+    for (const BatchOp* op : grp) {
+        R = std::max(R, op->tokens->size());
+    }
+    std::vector<Span> all;
+    for (BatchOp* op : grp) {
+        {
+            ActAs act(op->stream);
+            if (Status sp_st = settle_pads(); !sp_st.ok()) {
+                op->st = sp_st;
+                continue;
+            }
+        }
+        const size_t N = streams[op->stream].history_tokens.size();
+        const size_t real = op->tokens->size();
+        const size_t n_ctx_seq = (opts.n_ctx == 0) ? 4096u : opts.n_ctx;   // as load_model resolves it
+        const size_t room = (n_ctx_seq > N) ? (n_ctx_seq - N) : 0u;
+        all.push_back(Span{op, 0, real, std::max(real, std::min(R, room)), N});
+    }
+    // Streams that cannot take the common row count (end of context) run in their own pass
+    std::vector<std::vector<Span>> parts;
+    for (const Span& sp : all) {
+        bool placed = false;
+        for (auto& part : parts) {
+            if (part.front().rows == sp.rows) { part.push_back(sp); placed = true; break; }
+        }
+        if (!placed) parts.push_back({sp});
+    }
+
+    for (auto& spans : parts) {
+        size_t total = 0;
+        for (Span& sp : spans) { sp.off = total; total += sp.rows; }
+        std::vector<int32_t> tok(total), pos(total), n_seq(total, 1), seq_vals(spans.size());
+        std::vector<int32_t*> seq_ptr(total);
+        std::vector<int8_t> flags(total, 0);
+        for (size_t si = 0; si < spans.size(); ++si) {
+            const Span& sp = spans[si];
+            seq_vals[si] = static_cast<int32_t>(sp.op->stream);
+            for (size_t j = 0; j < sp.rows; ++j) {
+                tok[sp.off + j] = (j < sp.real) ? (*sp.op->tokens)[j] : sp.op->tokens->back();
+                pos[sp.off + j] = static_cast<int32_t>(sp.N + j);
+                seq_ptr[sp.off + j] = &seq_vals[si];
+                flags[sp.off + j] = (j < sp.real) ? 1 : 0;
+            }
+        }
+        prefetch_ple_for_chunk(tok.data(), static_cast<int32_t>(total));
+
+        LlamaBatchRaw batch{};
+        batch.n_tokens = static_cast<int32_t>(total);
+        batch.token = tok.data();
+        batch.pos = pos.data();
+        batch.n_seq_id = n_seq.data();
+        batch.seq_id = seq_ptr.data();
+        batch.logits = flags.data();
+
+        const auto t0 = std::chrono::steady_clock::now();
+        const int32_t rc = llama_decode(ctx, batch);
+        const auto t1 = std::chrono::steady_clock::now();
+        if (rc != 0) {
+            void* mem = llama_get_memory(ctx);
+            for (const Span& sp : spans) {
+                if (mem != nullptr && llama_memory_seq_rm != nullptr) {
+                    (void)llama_memory_seq_rm(mem, static_cast<int32_t>(sp.op->stream), static_cast<int32_t>(sp.N), -1);
+                }
+                sp.op->st = Status::Error(ErrorCode::BackendError, "llama_decode failed in batched verify with code " + std::to_string(rc));
+            }
+            continue;
+        }
+        observe_step_timing(std::chrono::duration<double, std::milli>(t1 - t0).count(), static_cast<int32_t>(total));
+        if (trace_prefill()) {
+            std::fprintf(stderr, "sixi-asi: verify batch streams=%zu rows=%zu ms=%.1f\n", spans.size(), total,
+                         std::chrono::duration<double, std::milli>(t1 - t0).count());
+        }
+
+        for (const Span& sp : spans) {
+            ActAs act(sp.op->stream);
+            auto& st = S();
+            st.history_tokens.insert(st.history_tokens.end(), tok.begin() + static_cast<std::ptrdiff_t>(sp.off),
+                                     tok.begin() + static_cast<std::ptrdiff_t>(sp.off + sp.real));
+            st.phys_extra = sp.rows - sp.real;
+            const bool gpu_ids = !sp.op->want_logits && st.gpu_sampler_attached && llama_get_sampled_token_ith != nullptr;
+            for (size_t j = 0; j < sp.real && sp.op->st.ok(); ++j) {
+                const int32_t row = static_cast<int32_t>(sp.off + j);
+                if (gpu_ids) {
+                    const int32_t sampled = llama_get_sampled_token_ith(ctx, row);
+                    if (sampled < 0 || static_cast<uint64_t>(sampled) >= n_vocab) {
+                        sp.op->st = Status::Error(ErrorCode::BackendError, "llama_get_sampled_token_ith returned invalid token at " + std::to_string(j));
+                        break;
+                    }
+                    sp.op->sampled.push_back(sampled);
+                    st.last_sampled_token = sampled;
+                    continue;
+                }
+                const float* raw = llama_get_logits_ith(ctx, row);
+                if (raw == nullptr) {
+                    sp.op->st = Status::Error(ErrorCode::BackendError, "llama_get_logits_ith returned null for index " + std::to_string(j));
+                    break;
+                }
+                const int32_t best = DeterministicSampler::sample_greedy_argmax(raw, n_vocab);
+                st.last_sampled_token = best;
+                if (!sp.op->want_logits) {
+                    sp.op->sampled.push_back(best);
+                    continue;
+                }
+                sp.op->logits.emplace_back(raw, raw + n_vocab);
+                if (j + 1 == sp.real) {
+                    NumericHealthReport health{};
+                    Status num_st = inspect_and_apply_numeric_policy(
+                        sp.op->logits.back().data(), static_cast<int64_t>(n_vocab), opts.numeric_policy,
+                        opts.numeric_clamp_abs_max, &health);
+                    telemetry.last_numeric_health = health;
+                    if (!num_st.ok()) {
+                        sp.op->st = num_st;
+                    }
+                }
+            }
+            telemetry.numeric_inspections++;
+            if (gpu_ids) {
+                telemetry.last_numeric_health.healthy = true;
+            }
+        }
+
+        const auto t_out = std::chrono::steady_clock::now();
+        // Target features of every row -> drafter KV, one decode for all streams
+        if (ctx_dflash != nullptr && dflash_target_layer_ids != nullptr && dflash_target_layer_ids_n > 0 &&
+            llama_get_embeddings_layer_inp != nullptr && llama_encode != nullptr && llama_get_embeddings_nextn != nullptr) {
+            std::vector<float> features(total * n_embd_dflash_enc, 0.0f);
+            bool all_extracted = true;
+            for (uint32_t k = 0; k < dflash_target_layer_ids_n && all_extracted; ++k) {
+                const float* layer_inp = llama_get_embeddings_layer_inp(ctx, static_cast<uint32_t>(dflash_target_layer_ids[k]));
+                if (layer_inp == nullptr) {
+                    all_extracted = false;
+                    break;
+                }
+                for (size_t i = 0; i < total; ++i) {
+                    std::memcpy(features.data() + i * n_embd_dflash_enc + static_cast<size_t>(k) * n_embd_tgt,
+                                layer_inp + i * n_embd_tgt, static_cast<size_t>(n_embd_tgt) * sizeof(float));
+                }
+            }
+            const float* inject_rows = nullptr;
+            std::vector<float> projected;
+            if (!all_extracted) {
+                telemetry.dflash_inject_skipped += static_cast<uint64_t>(total);
+            } else if (dflash_fused_inject) {
+                inject_rows = features.data();
+            } else {
+                LlamaBatchRaw enc_batch{};
+                enc_batch.n_tokens = static_cast<int32_t>(total);
+                enc_batch.embd = features.data();
+                if (llama_encode(ctx_dflash, enc_batch) == 0) {
+                    const float* inp_g = llama_get_embeddings_nextn(ctx_dflash);
+                    if (inp_g != nullptr) {
+                        projected.assign(inp_g, inp_g + total * n_embd_dflash_dec);
+                        inject_rows = projected.data();
+                    }
+                }
+            }
+            if (inject_rows != nullptr) {
+                const size_t n_pos = std::max<uint32_t>(1u, dflash_n_pos_per_embd);
+                std::vector<int32_t> inj_pos(total * n_pos, 0);
+                for (size_t j = 0; j < std::min<size_t>(n_pos, 3u); ++j) {
+                    for (size_t i = 0; i < total; ++i) {
+                        inj_pos[j * total + i] = pos[i];
+                    }
+                }
+                std::vector<int8_t> inj_logits(total, 0);
+                LlamaBatchRaw inj{};
+                inj.n_tokens = static_cast<int32_t>(total);
+                inj.embd = const_cast<float*>(inject_rows);
+                inj.pos = inj_pos.data();
+                inj.n_seq_id = n_seq.data();
+                inj.seq_id = seq_ptr.data();
+                inj.logits = inj_logits.data();
+                if (llama_decode(ctx_dflash, inj) == 0) {
+                    for (const Span& sp : spans) {
+                        streams[sp.op->stream].dflash_synced_len = sp.N + sp.real;
+                    }
+                    telemetry.dflash_injected_tokens += static_cast<uint64_t>(total);
+                }
+            }
+        }
+
+        if (trace_prefill()) {
+            const auto t_inj = std::chrono::steady_clock::now();
+            auto ms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+            std::fprintf(stderr, "sixi-asi: verify group streams=%zu rows=%zu decode+read=%.1f inject=%.1f ms t=%.1f\n",
+                         spans.size(), total, ms(t0, t_out), ms(t_out, t_inj),
+                         std::chrono::duration<double, std::milli>(t0.time_since_epoch()).count());
+        }
+    }
+}
+
+// One drafter block per stream in a single decode (equal block length for every stream; a stream that asked for
+// fewer drafts gets its result truncated).
+void LlamaCppBackend::Impl::exec_draft_group(std::vector<BatchOp*>& grp) {
+    const uint32_t max_dft = static_cast<uint32_t>(std::max(1, dflash_max_drafts()));
+    struct Span { BatchOp* op; size_t off; size_t N; };
+    std::vector<Span> spans;
+    uint32_t K = 0;
+    for (BatchOp* op : grp) {
+        {
+            ActAs act(op->stream);
+            if (Status sp_st = settle_pads(); !sp_st.ok()) {
+                op->st = sp_st;
+                continue;
+            }
+        }
+        const auto& st = streams[op->stream];
+        const size_t N = st.history_tokens.size();
+        telemetry.dflash_draft_calls++;
+        if (ctx_dflash == nullptr) {
+            op->st = Status::Error(ErrorCode::BackendError, "block drafter is not loaded");
+            continue;
+        }
+        if (st.dflash_synced_len != N) {
+            telemetry.dflash_draft_unsynced++;
+            op->st = Status::Error(ErrorCode::StateInvalidated,
+                                   "DFlash draft KV covers " + std::to_string(st.dflash_synced_len) + " of " + std::to_string(N) + " target positions");
+            continue;
+        }
+        if (op->k == 0) {
+            continue;
+        }
+        K = std::max(K, std::min(op->k, max_dft));
+        spans.push_back(Span{op, 0, N});
+    }
+    if (spans.empty() || K == 0) {
+        return;
+    }
+    const bool anchor_first = dflash_anchor_first;
+    const size_t n_block = anchor_first ? K : K + 1u;
+    const size_t i_draft_beg = anchor_first ? 0u : 1u;
+    const size_t total = n_block * spans.size();
+
+    std::vector<int32_t> tok(total), pos(total), n_seq(total, 1), seq_vals(spans.size());
+    std::vector<int32_t*> seq_ptr(total);
+    std::vector<int8_t> flags(total, dflash_is_v2 ? 0 : 1);
+    for (size_t si = 0; si < spans.size(); ++si) {
+        Span& sp = spans[si];
+        sp.off = si * n_block;
+        seq_vals[si] = static_cast<int32_t>(sp.op->stream);
+        for (size_t i = 0; i < n_block; ++i) {
+            tok[sp.off + i] = (i == 0) ? sp.op->first_token : dflash_mask_token_id;
+            pos[sp.off + i] = static_cast<int32_t>(sp.N + i);
+            seq_ptr[sp.off + i] = &seq_vals[si];
+        }
+    }
+    LlamaBatchRaw batch{};
+    batch.n_tokens = static_cast<int32_t>(total);
+    batch.token = tok.data();
+    batch.pos = pos.data();
+    batch.n_seq_id = n_seq.data();
+    batch.seq_id = seq_ptr.data();
+    batch.logits = flags.data();
+
+    const auto td0 = std::chrono::steady_clock::now();
+    const int32_t rc = llama_decode(ctx_dflash, batch);
+    void* mem_dflash = llama_get_memory(ctx_dflash);
+    if (rc != 0) {
+        for (const Span& sp : spans) {
+            sp.op->st = Status::Error(ErrorCode::BackendError, "block drafter llama_decode failed with code " + std::to_string(rc));
+        }
+    } else {
+        static const float p_min = [] {
+            const char* e = std::getenv("SIXI_DSPARK_P_MIN");
+            return (e != nullptr && *e != '\0') ? std::strtof(e, nullptr) : 0.0f;
+        }();
+        const uint64_t dft_vocab = (n_vocab_dflash > 0) ? std::min<uint64_t>(n_vocab_dflash, n_vocab) : n_vocab;
+        const size_t stride = static_cast<size_t>(n_embd_dflash_dec);
+        const float* nextn = (dflash_is_v2 || (anchor_first && dflash_has_conf && p_min > 0.0f))
+            ? llama_get_embeddings_nextn(ctx_dflash) : nullptr;
+        for (const Span& sp : spans) {
+            const size_t want = std::min<size_t>(sp.op->k, max_dft);
+            auto& drafted = sp.op->drafted;
+            if (dflash_is_v2) {
+                const int32_t top_k = dflash_selector_top_k;
+                if (nextn != nullptr && top_k > 0 && stride >= static_cast<size_t>(top_k) * static_cast<size_t>(top_k + 1)) {
+                    int32_t predecessor = 0;
+                    for (size_t i = 1; i < n_block && drafted.size() < want; ++i) {
+                        const float* row = nextn + (sp.off + i) * stride;
+                        const float* scores = row + top_k + static_cast<size_t>(predecessor) * top_k;
+                        int32_t best = 0;
+                        for (int32_t c = 1; c < top_k; ++c) {
+                            if (scores[c] > scores[best]) best = c;
+                        }
+                        predecessor = best;
+                        const int32_t t = static_cast<int32_t>(row[predecessor]);
+                        if (t < 0 || static_cast<uint64_t>(t) >= n_vocab) break;
+                        drafted.push_back(t);
+                    }
+                }
+            } else {
+                for (size_t i = i_draft_beg; i < n_block && drafted.size() < want; ++i) {
+                    if (nextn != nullptr && nextn[(sp.off + i) * stride] < p_min) break;
+                    const float* logits_i = llama_get_logits_ith(ctx_dflash, static_cast<int32_t>(sp.off + i));
+                    if (logits_i == nullptr) break;
+                    drafted.push_back(DeterministicSampler::sample_greedy_argmax(logits_i, dft_vocab));
+                }
+            }
+        }
+    }
+    if (mem_dflash != nullptr && llama_memory_seq_rm != nullptr) {
+        for (const Span& sp : spans) {
+            (void)llama_memory_seq_rm(mem_dflash, static_cast<int32_t>(sp.op->stream), static_cast<int32_t>(sp.N), -1);
+        }
+    }
+    if (trace_prefill()) {
+        std::fprintf(stderr, "sixi-asi: draft group streams=%zu rows=%zu ms=%.1f t=%.1f\n", spans.size(), total,
+                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - td0).count(),
+                     std::chrono::duration<double, std::milli>(td0.time_since_epoch()).count());
+    }
+}
+
 
 
 // Field writes dispatch on the detected layout; Unknown (legacy library) falls back to the V1 layout.
@@ -1964,6 +2489,7 @@ Status LlamaCppBackend::load_model(const LoadOptions& opts) {
 
     const bool can_load_mtp =
         opts.load_embedded_mtp &&
+        opts.n_streams <= 1u &&
         impl_->telemetry.abi_canary_verified &&
         (impl_->llama_model_n_layer_nextn != nullptr) &&
         (impl_->llama_model_n_embd_out != nullptr) &&
@@ -1988,15 +2514,21 @@ Status LlamaCppBackend::load_model(const LoadOptions& opts) {
     SIXI_CTX_SET(cparams, n_ctx, n_ctx);
     SIXI_CTX_SET(cparams, n_batch, n_batch);
     SIXI_CTX_SET(cparams, n_ubatch, n_ubatch);
-    LlamaSamplerSeqConfigRaw ctx_sampler_seq_cfg{0, nullptr};
+    std::vector<LlamaSamplerSeqConfigRaw> ctx_sampler_seq_cfgs;
     if (impl_->telemetry.abi_canary_verified) {
         // GPU recurrent-state snapshot ring: O(1) rollback of up to n_rs_seq tokens (bounds the speculative draft k)
         const uint32_t n_rs_seq = (opts.n_rs_seq == 0) ? 8u : opts.n_rs_seq;
         const uint32_t n_outputs_max = std::max<uint32_t>(opts.n_outputs_max, n_rs_seq + 1u);
-        if (opts.device_snapshot_slots > 0 && impl_->llama_memory_seq_cp != nullptr && impl_->llama_memory_seq_rm != nullptr) {
-            // One live sequence plus N snapshot slots; llama.cpp divides n_ctx among sequences (n_ctx_seq = n_ctx / n_seq_max)
-            impl_->n_seq_total = 1u + opts.device_snapshot_slots;
-            impl_->device_slots.assign(opts.device_snapshot_slots, Impl::DeviceSlot{});
+        const bool seq_api = impl_->llama_memory_seq_cp != nullptr && impl_->llama_memory_seq_rm != nullptr;
+        // Parallel streams: sequences 0..n_streams-1 are live, the snapshot slots follow. The chained MTP drafter
+        // keeps single-sequence host state, so it is only loaded with one stream.
+        impl_->n_streams = seq_api ? std::clamp<uint32_t>(opts.n_streams, 1u, 16u) : 1u;
+        impl_->streams.assign(impl_->n_streams, Impl::StreamState{});
+        const uint32_t n_slots = seq_api ? opts.device_snapshot_slots : 0u;
+        if (impl_->n_streams + n_slots > 1u) {
+            // llama.cpp divides n_ctx among sequences (n_ctx_seq = n_ctx / n_seq_max)
+            impl_->n_seq_total = impl_->n_streams + n_slots;
+            impl_->device_slots.assign(n_slots, Impl::DeviceSlot{});
             SIXI_CTX_SET(cparams, n_seq_max, impl_->n_seq_total);
             SIXI_CTX_SET(cparams, n_ctx, n_ctx * impl_->n_seq_total);
         }
@@ -2022,19 +2554,29 @@ Status LlamaCppBackend::load_model(const LoadOptions& opts) {
             impl_->llama_sampler_chain_add != nullptr &&
             impl_->llama_sampler_init_greedy != nullptr &&
             impl_->llama_get_sampled_token_ith != nullptr) {
-            void* chain = impl_->llama_sampler_chain_init(impl_->llama_sampler_chain_default_params());
-            void* greedy = impl_->llama_sampler_init_greedy();
-            if (chain != nullptr && greedy != nullptr) {
-                impl_->llama_sampler_chain_add(chain, greedy);
-                impl_->ctx_sampler_chain = chain;
+            // One greedy chain per live sequence (the library binds a chain to one sequence)
+            for (uint32_t si = 0; si < impl_->n_streams; ++si) {
+                void* chain = impl_->llama_sampler_chain_init(impl_->llama_sampler_chain_default_params());
+                void* greedy = impl_->llama_sampler_init_greedy();
+                if (chain != nullptr && greedy != nullptr) {
+                    impl_->llama_sampler_chain_add(chain, greedy);
+                    impl_->streams[si].ctx_sampler_chain = chain;
+                    impl_->streams[si].gpu_sampler_attached = true;
+                    ctx_sampler_seq_cfgs.push_back(LlamaSamplerSeqConfigRaw{static_cast<int32_t>(si), chain});
+                } else if (chain != nullptr && impl_->llama_sampler_free != nullptr) {
+                    impl_->llama_sampler_free(chain);
+                }
+            }
+            if (ctx_sampler_seq_cfgs.size() == impl_->n_streams) {
                 impl_->gpu_sampler_supported = true;
-                impl_->gpu_sampler_attached = true;
-                ctx_sampler_seq_cfg.seq_id = 0;
-                ctx_sampler_seq_cfg.sampler = chain;
-                SIXI_CTX_SET(cparams, samplers, &ctx_sampler_seq_cfg);
-                SIXI_CTX_SET(cparams, n_samplers, 1u);
-            } else if (chain != nullptr && impl_->llama_sampler_free != nullptr) {
-                impl_->llama_sampler_free(chain);
+                SIXI_CTX_SET(cparams, samplers, ctx_sampler_seq_cfgs.data());
+                SIXI_CTX_SET(cparams, n_samplers, static_cast<uint32_t>(ctx_sampler_seq_cfgs.size()));
+            } else {
+                for (auto& st : impl_->streams) {
+                    if (st.ctx_sampler_chain != nullptr && impl_->llama_sampler_free != nullptr) impl_->llama_sampler_free(st.ctx_sampler_chain);
+                    st.ctx_sampler_chain = nullptr;
+                    st.gpu_sampler_attached = false;
+                }
             }
         }
     } else {
@@ -2135,7 +2677,7 @@ Status LlamaCppBackend::load_model(const LoadOptions& opts) {
             // Set masked=false on ctx_mtp so fused [start_pos .. N] batches (where only p==N has logits=1)
             // store all batch token rows densely in embd_nextn, allowing exact indexing of row (count - 1).
             impl_->llama_set_embeddings_nextn(impl_->ctx_mtp, true, false);
-            impl_->mtp_synced_len = 0;
+            impl_->S().mtp_synced_len = 0;
             impl_->telemetry.embedded_mtp_loaded = true;
             impl_->telemetry.external_mtp_loaded = external;
         } else if (impl_->mtp_sampler_chain != nullptr && impl_->llama_sampler_free != nullptr) {
@@ -2257,6 +2799,26 @@ Status LlamaCppBackend::load_model(const LoadOptions& opts) {
                     impl_->llama_set_embeddings_nextn(impl_->ctx_dflash, true, !impl_->dflash_is_v2);
                     impl_->llama_set_causal_attn(impl_->ctx_dflash, dflash_causal);
                     impl_->telemetry.dflash2_drafter_loaded = true;
+                    if (impl_->ctx_mtp != nullptr) {
+                        // The block drafter replaces the chained MTP head. Keeping the MTP context cost a hidden-state
+                        // readback per decode and an MTP catch-up pass over every prompt (122 ms of a 327 ms TTFT
+                        // for a 65-token prompt) for drafts that were never requested.
+                        if (impl_->mtp_sampler_chain != nullptr) {
+                            if (impl_->llama_set_sampler != nullptr) (void)impl_->llama_set_sampler(impl_->ctx_mtp, 0, nullptr);
+                            if (impl_->llama_sampler_free != nullptr) impl_->llama_sampler_free(impl_->mtp_sampler_chain);
+                            impl_->mtp_sampler_chain = nullptr;
+                        }
+                        impl_->llama_free(impl_->ctx_mtp);
+                        impl_->ctx_mtp = nullptr;
+                        if (impl_->model_mtp != nullptr) {
+                            impl_->llama_model_free(impl_->model_mtp);
+                            impl_->model_mtp = nullptr;
+                        }
+                        impl_->llama_set_embeddings_nextn(impl_->ctx, false, false);
+                        impl_->n_embd = 0;
+                        impl_->telemetry.embedded_mtp_loaded = false;
+                        impl_->telemetry.external_mtp_loaded = false;
+                    }
                     if (impl_->dflash_anchor_first) {
                         std::fprintf(stderr, "sixi-asi: DSpark drafter (anchor-first, block %d -> up to %d drafts, confidence head %s)\n",
                                      impl_->dflash_block_size, impl_->dflash_max_drafts(), impl_->dflash_has_conf ? "yes" : "no");
@@ -2340,7 +2902,7 @@ bool LlamaCppBackend::is_end_of_generation(int32_t token_id) const noexcept {
 }
 
 std::vector<int32_t> LlamaCppBackend::context_tokens() const {
-    return impl_ ? impl_->history_tokens : std::vector<int32_t>{};
+    return impl_ ? impl_->S().history_tokens : std::vector<int32_t>{};
 }
 
 std::string LlamaCppBackend::model_chat_template() const {
@@ -2355,20 +2917,21 @@ void LlamaCppBackend::set_gpu_greedy_sampling_enabled(bool enabled) noexcept {
     if (!impl_ || impl_->ctx == nullptr || !impl_->gpu_sampler_supported || impl_->llama_set_sampler == nullptr) {
         return;
     }
-    if (enabled == impl_->gpu_sampler_attached) {
+    if (enabled == impl_->S().gpu_sampler_attached) {
         return;
     }
+    Impl::GpuHold gpu_hold(impl_.get());
     // Attaching/detaching the backend sampler chain toggles between GPU argmax (4 B/token readback)
     // and full host logits (n_vocab floats/token). Detached mode is mandatory for temperature > 0.
     // llama.cpp initialises a chain for backend use exactly once, so a detached chain is freed and a
     // fresh one is built on re-attach.
     if (!enabled) {
-        (void)impl_->llama_set_sampler(impl_->ctx, 0, nullptr);
-        if (impl_->ctx_sampler_chain != nullptr && impl_->llama_sampler_free != nullptr) {
-            impl_->llama_sampler_free(impl_->ctx_sampler_chain);
+        (void)impl_->llama_set_sampler(impl_->ctx, impl_->seq(), nullptr);
+        if (impl_->S().ctx_sampler_chain != nullptr && impl_->llama_sampler_free != nullptr) {
+            impl_->llama_sampler_free(impl_->S().ctx_sampler_chain);
         }
-        impl_->ctx_sampler_chain = nullptr;
-        impl_->gpu_sampler_attached = false;
+        impl_->S().ctx_sampler_chain = nullptr;
+        impl_->S().gpu_sampler_attached = false;
     } else {
         void* chain = impl_->llama_sampler_chain_init(impl_->llama_sampler_chain_default_params());
         void* greedy = impl_->llama_sampler_init_greedy();
@@ -2379,18 +2942,18 @@ void LlamaCppBackend::set_gpu_greedy_sampling_enabled(bool enabled) noexcept {
             return;
         }
         impl_->llama_sampler_chain_add(chain, greedy);
-        if (impl_->llama_set_sampler(impl_->ctx, 0, chain)) {
-            impl_->ctx_sampler_chain = chain;
-            impl_->gpu_sampler_attached = true;
+        if (impl_->llama_set_sampler(impl_->ctx, impl_->seq(), chain)) {
+            impl_->S().ctx_sampler_chain = chain;
+            impl_->S().gpu_sampler_attached = true;
         } else if (impl_->llama_sampler_free != nullptr) {
             impl_->llama_sampler_free(chain);
         }
     }
-    impl_->last_sampled_token = -1;
+    impl_->S().last_sampled_token = -1;
 }
 
 bool LlamaCppBackend::gpu_greedy_sampling_enabled() const noexcept {
-    return impl_ && impl_->gpu_sampler_attached;
+    return impl_ && impl_->S().gpu_sampler_attached;
 }
 
 Result<std::vector<int32_t>> LlamaCppBackend::tokenize(const std::string& text, bool add_bos) {
@@ -2452,20 +3015,22 @@ Status LlamaCppBackend::reset_state() {
     if (!is_loaded()) {
         return Status::Error(ErrorCode::BackendError, "LlamaCppBackend model is not loaded");
     }
-    if (!impl_->device_slots.empty() && impl_->llama_memory_seq_rm != nullptr) {
-        // Device snapshot slots live in sequences 1..n: clear only the live sequence 0 and keep the slots
-        impl_->for_each_memory([&](void* mem) { (void)impl_->llama_memory_seq_rm(mem, 0, -1, -1); });
+    Impl::GpuHold gpu_hold(impl_.get());
+    impl_->S().phys_extra = 0;   // the whole sequence is cleared below
+    if ((!impl_->device_slots.empty() || impl_->n_streams > 1) && impl_->llama_memory_seq_rm != nullptr) {
+        // Other streams and the snapshot slots live in their own sequences: clear only the bound stream's
+        impl_->for_each_memory([&](void* mem) { (void)impl_->llama_memory_seq_rm(mem, impl_->seq(), -1, -1); });
     } else {
         impl_->for_each_memory([&](void* mem) { impl_->llama_memory_clear(mem, true); });
     }
-    impl_->history_tokens.clear();
-    impl_->history_h_nextn.clear();
-    impl_->h_valid_from = 0;
+    impl_->S().history_tokens.clear();
+    impl_->S().history_h_nextn.clear();
+    impl_->S().h_valid_from = 0;
     impl_->latest_h_q8_1_blocks.clear();
-    impl_->mtp_synced_len = 0;
-    impl_->dflash_synced_len = 0;
-    impl_->last_sampled_token = -1;
-    if (impl_->device_slots.empty() || impl_->llama_memory_seq_rm == nullptr) {
+    impl_->S().mtp_synced_len = 0;
+    impl_->S().dflash_synced_len = 0;
+    impl_->S().last_sampled_token = -1;
+    if ((impl_->device_slots.empty() && impl_->n_streams <= 1) || impl_->llama_memory_seq_rm == nullptr) {
         for (auto& slot : impl_->device_slots) {
             slot = Impl::DeviceSlot{}; // llama_memory_clear wiped every sequence
         }
@@ -2490,27 +3055,29 @@ Status LlamaCppBackend::device_snapshot_save(uint32_t slot) {
     if (!is_loaded() || slot >= impl_->device_slots.size()) {
         return Status::Error(ErrorCode::InvalidArgument, "device snapshot slot out of range");
     }
-    const int32_t seq = static_cast<int32_t>(slot) + 1;
+    Impl::GpuHold gpu_hold(impl_.get());
+    (void)impl_->settle_pads();
+    const int32_t seq = static_cast<int32_t>(slot + impl_->n_streams);
     // Drop whatever the slot held, then share/copy the live sequence into it (KV: cell share or stream copy;
     // recurrent: shared cell with copy-on-write on the next write to sequence 0)
     impl_->for_each_memory([&](void* mem) {
         (void)impl_->llama_memory_seq_rm(mem, seq, -1, -1);
-        impl_->llama_memory_seq_cp(mem, 0, seq, -1, -1);
+        impl_->llama_memory_seq_cp(mem, impl_->seq(), seq, -1, -1);
     });
     auto& ds = impl_->device_slots[slot];
     ds.valid = true;
-    ds.tokens = impl_->history_tokens;
-    ds.mtp_synced_len = impl_->mtp_synced_len;
-    ds.dflash_synced_len = impl_->dflash_synced_len;
+    ds.tokens = impl_->S().history_tokens;
+    ds.mtp_synced_len = impl_->S().mtp_synced_len;
+    ds.dflash_synced_len = impl_->S().dflash_synced_len;
     ds.h_rows.clear();
     const size_t embd = static_cast<size_t>(impl_->n_embd);
-    const size_t N = impl_->history_tokens.size();
-    if (embd > 0 && N > 0 && impl_->history_h_nextn.size() >= N * embd) {
+    const size_t N = impl_->S().history_tokens.size();
+    if (embd > 0 && N > 0 && impl_->S().history_h_nextn.size() >= N * embd) {
         const size_t want = std::min<size_t>(N, static_cast<size_t>(impl_->active_n_rs_seq) + 1u);
-        const size_t avail = (N > impl_->h_valid_from) ? (N - impl_->h_valid_from) : 0u;
+        const size_t avail = (N > impl_->S().h_valid_from) ? (N - impl_->S().h_valid_from) : 0u;
         const size_t rows = std::min(want, avail);
-        ds.h_rows.assign(impl_->history_h_nextn.begin() + static_cast<std::ptrdiff_t>((N - rows) * embd),
-                         impl_->history_h_nextn.begin() + static_cast<std::ptrdiff_t>(N * embd));
+        ds.h_rows.assign(impl_->S().history_h_nextn.begin() + static_cast<std::ptrdiff_t>((N - rows) * embd),
+                         impl_->S().history_h_nextn.begin() + static_cast<std::ptrdiff_t>(N * embd));
     }
     impl_->telemetry.device_snapshots_saved++;
     return Status::Ok();
@@ -2520,26 +3087,28 @@ Status LlamaCppBackend::device_snapshot_restore(uint32_t slot) {
     if (!is_loaded() || slot >= impl_->device_slots.size() || !impl_->device_slots[slot].valid) {
         return Status::Error(ErrorCode::InvalidArgument, "device snapshot slot is empty");
     }
-    const int32_t seq = static_cast<int32_t>(slot) + 1;
+    Impl::GpuHold gpu_hold(impl_.get());
+    impl_->S().phys_extra = 0;   // the whole sequence is replaced below
+    const int32_t seq = static_cast<int32_t>(slot + impl_->n_streams);
     impl_->for_each_memory([&](void* mem) {
-        (void)impl_->llama_memory_seq_rm(mem, 0, -1, -1);
-        impl_->llama_memory_seq_cp(mem, seq, 0, -1, -1);
+        (void)impl_->llama_memory_seq_rm(mem, impl_->seq(), -1, -1);
+        impl_->llama_memory_seq_cp(mem, seq, impl_->seq(), -1, -1);
     });
     const auto& ds = impl_->device_slots[slot];
-    impl_->history_tokens = ds.tokens;
-    impl_->mtp_synced_len = std::min(ds.mtp_synced_len, ds.tokens.size());
-    impl_->dflash_synced_len = std::min(ds.dflash_synced_len, ds.tokens.size());
-    impl_->last_sampled_token = -1;
+    impl_->S().history_tokens = ds.tokens;
+    impl_->S().mtp_synced_len = std::min(ds.mtp_synced_len, ds.tokens.size());
+    impl_->S().dflash_synced_len = std::min(ds.dflash_synced_len, ds.tokens.size());
+    impl_->S().last_sampled_token = -1;
     const size_t embd = static_cast<size_t>(impl_->n_embd);
     const size_t N = ds.tokens.size();
     if (embd > 0) {
-        impl_->history_h_nextn.assign(N * embd, 0.0f);
+        impl_->S().history_h_nextn.assign(N * embd, 0.0f);
         const size_t rows = (embd > 0) ? ds.h_rows.size() / embd : 0;
         if (rows > 0 && rows <= N) {
-            std::memcpy(impl_->history_h_nextn.data() + (N - rows) * embd, ds.h_rows.data(), ds.h_rows.size() * sizeof(float));
-            impl_->h_valid_from = N - rows;
+            std::memcpy(impl_->S().history_h_nextn.data() + (N - rows) * embd, ds.h_rows.data(), ds.h_rows.size() * sizeof(float));
+            impl_->S().h_valid_from = N - rows;
         } else {
-            impl_->h_valid_from = N;
+            impl_->S().h_valid_from = N;
         }
     }
     impl_->telemetry.device_snapshots_restored++;
@@ -2550,10 +3119,12 @@ Result<BackendSequenceState> LlamaCppBackend::checkpoint_state(const Determinist
     if (!is_loaded()) {
         return Result<BackendSequenceState>(ErrorCode::BackendError, "LlamaCppBackend model is not loaded");
     }
+    Impl::GpuHold gpu_hold(impl_.get());
+    (void)impl_->settle_pads();
     BackendSequenceState st{};
-    const size_t N = impl_->history_tokens.size();
+    const size_t N = impl_->S().history_tokens.size();
     st.seq_len = static_cast<uint64_t>(N);
-    st.tokens = impl_->history_tokens;
+    st.tokens = impl_->S().history_tokens;
     st.rng_state = rng.checkpoint();
 
     // Composite snapshot: target context + MTP context + DFlash2 context + the last target hidden row
@@ -2566,9 +3137,9 @@ Result<BackendSequenceState> LlamaCppBackend::checkpoint_state(const Determinist
     // n_rs_seq tokens, the MTP catch-up still finds h_tgt[p-1] for every position it must re-evaluate.
     const size_t embd = static_cast<size_t>(impl_->n_embd);
     size_t h_rows = 0;
-    if (embd > 0 && N >= 1 && impl_->history_h_nextn.size() >= N * embd) {
+    if (embd > 0 && N >= 1 && impl_->S().history_h_nextn.size() >= N * embd) {
         const size_t want = std::min<size_t>(N, static_cast<size_t>(impl_->active_n_rs_seq) + 1u);
-        const size_t first_valid = impl_->h_valid_from;
+        const size_t first_valid = impl_->S().h_valid_from;
         const size_t avail = (N > first_valid) ? (N - first_valid) : 0u;
         h_rows = std::min(want, avail);
     }
@@ -2577,8 +3148,8 @@ Result<BackendSequenceState> LlamaCppBackend::checkpoint_state(const Determinist
     SnapshotHeader hdr{};
     std::memcpy(hdr.magic, kSnapshotMagic, sizeof(hdr.magic));
     hdr.h_row_floats = h_floats;
-    hdr.mtp_synced_len = impl_->mtp_synced_len;
-    hdr.dflash_synced_len = impl_->dflash_synced_len;
+    hdr.mtp_synced_len = impl_->S().mtp_synced_len;
+    hdr.dflash_synced_len = impl_->S().dflash_synced_len;
 
     std::vector<uint8_t> blob;
     blob.resize(sizeof(SnapshotHeader) + tgt_sz + mtp_sz + dfl_sz + h_floats * sizeof(float));
@@ -2596,7 +3167,7 @@ Result<BackendSequenceState> LlamaCppBackend::checkpoint_state(const Determinist
         off += hdr.dflash_bytes;
     }
     if (h_floats > 0) {
-        std::memcpy(blob.data() + off, impl_->history_h_nextn.data() + (N - h_rows) * embd, h_floats * sizeof(float));
+        std::memcpy(blob.data() + off, impl_->S().history_h_nextn.data() + (N - h_rows) * embd, h_floats * sizeof(float));
         off += h_floats * sizeof(float);
     }
     blob.resize(off);
@@ -2612,21 +3183,23 @@ Status LlamaCppBackend::restore_state(const BackendSequenceState& checkpoint, De
     if (!is_loaded()) {
         return Status::Error(ErrorCode::BackendError, "LlamaCppBackend model is not loaded");
     }
+    Impl::GpuHold gpu_hold(impl_.get());
+    (void)impl_->settle_pads();
     const size_t ckpt_len = checkpoint.tokens.size();
     const bool ckpt_is_prefix_of_history =
-        !checkpoint.tokens.empty() && ckpt_len <= impl_->history_tokens.size() &&
-        std::equal(checkpoint.tokens.begin(), checkpoint.tokens.end(), impl_->history_tokens.begin());
+        !checkpoint.tokens.empty() && ckpt_len <= impl_->S().history_tokens.size() &&
+        std::equal(checkpoint.tokens.begin(), checkpoint.tokens.end(), impl_->S().history_tokens.begin());
 
     // 1. Identical state: nothing to do (the caller re-checkpointed after its last mutation)
-    if (ckpt_is_prefix_of_history && ckpt_len == impl_->history_tokens.size()) {
+    if (ckpt_is_prefix_of_history && ckpt_len == impl_->S().history_tokens.size()) {
         rng.restore(checkpoint.rng_state);
         return Status::Ok();
     }
     // 2. Fast O(1) GPU prefix rollback: only when the checkpoint really is a token-prefix of the live
     //    history and the delta fits in the recurrent snapshot ring. (The prefix equality check prevents
     //    continuing from another request's KV/GDN state when only the lengths happen to line up.)
-    if (ckpt_is_prefix_of_history && ckpt_len < impl_->history_tokens.size()) {
-        const size_t delta = impl_->history_tokens.size() - ckpt_len;
+    if (ckpt_is_prefix_of_history && ckpt_len < impl_->S().history_tokens.size()) {
+        const size_t delta = impl_->S().history_tokens.size() - ckpt_len;
         if (supports_fast_prefix_rollback() && delta <= impl_->active_n_rs_seq) {
             Status rb = rollback_to_position(ckpt_len);
             if (rb.ok()) {
@@ -2637,6 +3210,10 @@ Status LlamaCppBackend::restore_state(const BackendSequenceState& checkpoint, De
     }
 
     // 3. Full restore from the (composite) snapshot blob
+    if (impl_->n_streams > 1) {
+        // A host blob holds every sequence of the context: restoring it would overwrite the other streams
+        return Status::Error(ErrorCode::BackendError, "host state restore is not available with parallel streams");
+    }
     const uint8_t* data = checkpoint.opaque_backend_state.data();
     const size_t total = checkpoint.opaque_backend_state.size();
     SnapshotHeader hdr{};
@@ -2680,24 +3257,24 @@ Status LlamaCppBackend::restore_state(const BackendSequenceState& checkpoint, De
             impl_->llama_memory_clear(mem, true);
         }
     }
-    impl_->history_tokens = checkpoint.tokens;
-    impl_->last_sampled_token = -1;
+    impl_->S().history_tokens = checkpoint.tokens;
+    impl_->S().last_sampled_token = -1;
 
     const size_t embd = static_cast<size_t>(impl_->n_embd);
     if (embd > 0) {
-        if (impl_->history_h_nextn.size() > ckpt_len * embd) {
-            impl_->history_h_nextn.resize(ckpt_len * embd);
+        if (impl_->S().history_h_nextn.size() > ckpt_len * embd) {
+            impl_->S().history_h_nextn.resize(ckpt_len * embd);
         }
         const size_t h_rows = (h_floats % embd == 0) ? (h_floats / embd) : 0u;
         if (h_row != nullptr && h_rows >= 1 && h_rows <= ckpt_len) {
-            if (impl_->history_h_nextn.size() < ckpt_len * embd) {
-                impl_->history_h_nextn.resize(ckpt_len * embd, 0.0f);
+            if (impl_->S().history_h_nextn.size() < ckpt_len * embd) {
+                impl_->S().history_h_nextn.resize(ckpt_len * embd, 0.0f);
             }
-            std::memcpy(impl_->history_h_nextn.data() + (ckpt_len - h_rows) * embd, h_row, h_floats * sizeof(float));
-            impl_->h_valid_from = ckpt_len - h_rows;
+            std::memcpy(impl_->S().history_h_nextn.data() + (ckpt_len - h_rows) * embd, h_row, h_floats * sizeof(float));
+            impl_->S().h_valid_from = ckpt_len - h_rows;
         } else if (!ckpt_is_prefix_of_history) {
             // Rows before ckpt_len may belong to a different conversation: nothing before ckpt_len is trustworthy
-            impl_->h_valid_from = ckpt_len;
+            impl_->S().h_valid_from = ckpt_len;
         }
     }
 
@@ -2707,17 +3284,17 @@ Status LlamaCppBackend::restore_state(const BackendSequenceState& checkpoint, De
         if (composite && mtp_sz > 0) {
             restored = impl_->llama_state_set_data(impl_->ctx_mtp, mtp_ptr, mtp_sz) > 0;
             if (restored) {
-                impl_->mtp_synced_len = std::min<size_t>(static_cast<size_t>(hdr.mtp_synced_len), ckpt_len);
+                impl_->S().mtp_synced_len = std::min<size_t>(static_cast<size_t>(hdr.mtp_synced_len), ckpt_len);
             }
         }
         if (!restored) {
-            if (ckpt_is_prefix_of_history && impl_->mtp_synced_len > ckpt_len &&
+            if (ckpt_is_prefix_of_history && impl_->S().mtp_synced_len > ckpt_len &&
                 mem_mtp != nullptr && impl_->llama_memory_seq_rm != nullptr) {
-                (void)impl_->llama_memory_seq_rm(mem_mtp, 0, static_cast<int32_t>(ckpt_len), -1);
-                impl_->mtp_synced_len = ckpt_len;
+                (void)impl_->llama_memory_seq_rm(mem_mtp, impl_->seq(), static_cast<int32_t>(ckpt_len), -1);
+                impl_->S().mtp_synced_len = ckpt_len;
             } else if (!ckpt_is_prefix_of_history && mem_mtp != nullptr) {
                 impl_->llama_memory_clear(mem_mtp, true);
-                impl_->mtp_synced_len = 0;
+                impl_->S().mtp_synced_len = 0;
             }
         }
     }
@@ -2727,17 +3304,17 @@ Status LlamaCppBackend::restore_state(const BackendSequenceState& checkpoint, De
         if (composite && dfl_sz > 0) {
             restored = impl_->llama_state_set_data(impl_->ctx_dflash, dfl_ptr, dfl_sz) > 0;
             if (restored) {
-                impl_->dflash_synced_len = std::min<size_t>(static_cast<size_t>(hdr.dflash_synced_len), ckpt_len);
+                impl_->S().dflash_synced_len = std::min<size_t>(static_cast<size_t>(hdr.dflash_synced_len), ckpt_len);
             }
         }
         if (!restored) {
-            if (ckpt_is_prefix_of_history && impl_->dflash_synced_len > ckpt_len &&
+            if (ckpt_is_prefix_of_history && impl_->S().dflash_synced_len > ckpt_len &&
                 mem_dflash != nullptr && impl_->llama_memory_seq_rm != nullptr) {
-                (void)impl_->llama_memory_seq_rm(mem_dflash, 0, static_cast<int32_t>(ckpt_len), -1);
-                impl_->dflash_synced_len = ckpt_len;
+                (void)impl_->llama_memory_seq_rm(mem_dflash, impl_->seq(), static_cast<int32_t>(ckpt_len), -1);
+                impl_->S().dflash_synced_len = ckpt_len;
             } else if (!ckpt_is_prefix_of_history && mem_dflash != nullptr) {
                 impl_->llama_memory_clear(mem_dflash, true);
-                impl_->dflash_synced_len = 0;
+                impl_->S().dflash_synced_len = 0;
             }
         }
     }
@@ -2755,22 +3332,50 @@ Result<std::vector<float>> LlamaCppBackend::forward_tokens(
     if (input_tokens.empty()) {
         return Result<std::vector<float>>(ErrorCode::InvalidArgument, "input_tokens must not be empty");
     }
+    if (impl_->n_streams > 1 && input_tokens.size() == 1 && impl_->S().generating) {
+        // Single-token decode step of a generating stream: share the forward pass with the other streams
+        Impl::BatchOp op;
+        op.kind = Impl::BatchOp::Kind::Verify;
+        op.tokens = &input_tokens;
+        op.want_logits = !supports_gpu_greedy_sampling();
+        impl_->submit(op);
+        if (!op.st.ok()) {
+            return Result<std::vector<float>>(op.st);
+        }
+        if (op.want_logits) {
+            if (op.logits.size() != 1) {
+                return Result<std::vector<float>>(ErrorCode::BackendError, "batched decode returned no logits");
+            }
+            return Result<std::vector<float>>(std::move(op.logits.front()));
+        }
+        if (op.sampled.size() != 1) {
+            return Result<std::vector<float>>(ErrorCode::BackendError, "batched decode returned no token");
+        }
+        std::vector<float> out(impl_->n_vocab, 0.0f);
+        out[static_cast<size_t>(op.sampled.front())] = 1.0f;
+        return Result<std::vector<float>>(std::move(out));
+    }
+    Impl::GpuHold gpu_hold(impl_.get());
+    (void)impl_->settle_pads();
 
     const uint32_t max_batch = (impl_->opts.n_batch > 0) ? impl_->opts.n_batch : 512u;
     const uint32_t chunk_sz = (prefill_chunk_size == 0) ? max_batch : std::min(prefill_chunk_size, max_batch);
 
     std::vector<int32_t> mutable_tokens = input_tokens;
     std::vector<int8_t> zero_logits;
-    for (size_t offset = 0; offset < mutable_tokens.size(); offset += chunk_sz) {
+    for (size_t offset = 0, step = 0; offset < mutable_tokens.size(); offset += step) {
         const int32_t count = static_cast<int32_t>(
-            std::min<size_t>(chunk_sz, mutable_tokens.size() - offset));
-        const size_t pos_before = impl_->history_tokens.size();
+            std::min<size_t>(impl_->prefill_chunk_now(chunk_sz), mutable_tokens.size() - offset));
+        step = static_cast<size_t>(count);
+        const size_t pos_before = impl_->S().history_tokens.size();
         const bool is_last_chunk = (offset + static_cast<size_t>(count) >= mutable_tokens.size());
 
         // P0.2: Prefetch token rows in PleTableManager bounded pinned ring prior to llama_decode
         impl_->prefetch_ple_for_chunk(mutable_tokens.data() + offset, count);
 
         LlamaBatchRaw batch = impl_->llama_batch_get_one(mutable_tokens.data() + offset, count);
+        Impl::SeqArrays seq_arrays;
+        impl_->bind_batch_seq(batch, seq_arrays, pos_before);
         if (!is_last_chunk) {
             // Skip the 1.04 GB output.weight (lm_head) matmul + sampler on all intermediate prefill chunks
             zero_logits.assign(static_cast<size_t>(count), 0);
@@ -2790,11 +3395,14 @@ Result<std::vector<float>> LlamaCppBackend::forward_tokens(
                          pos_before, count, is_last_chunk ? 1 : 0, step_ms);
         }
 
-        impl_->history_tokens.insert(
-            impl_->history_tokens.end(),
+        impl_->S().history_tokens.insert(
+            impl_->S().history_tokens.end(),
             mutable_tokens.begin() + static_cast<std::ptrdiff_t>(offset),
             mutable_tokens.begin() + static_cast<std::ptrdiff_t>(offset + count));
         impl_->record_target_h_nextn_and_dflash(count, pos_before);
+        if (!is_last_chunk) {
+            impl_->gpu_yield(count);
+        }
     }
 
     // Warm ctx_mtp on prompt prefix [0 .. N-1] during prompt prefill (when input_tokens.size() > 1)
@@ -2805,12 +3413,12 @@ Result<std::vector<float>> LlamaCppBackend::forward_tokens(
     if (supports_gpu_greedy_sampling()) {
         const int32_t sampled = impl_->llama_get_sampled_token_ith(impl_->ctx, -1);
         if (sampled >= 0 && static_cast<uint64_t>(sampled) < impl_->n_vocab) {
-            impl_->last_sampled_token = sampled;
+            impl_->S().last_sampled_token = sampled;
             NumericHealthReport health{};
-            if (!impl_->history_h_nextn.empty() && impl_->n_embd > 0) {
+            if (!impl_->S().history_h_nextn.empty() && impl_->n_embd > 0) {
                 std::vector<float> h_check(
-                    impl_->history_h_nextn.end() - static_cast<std::ptrdiff_t>(impl_->n_embd),
-                    impl_->history_h_nextn.end());
+                    impl_->S().history_h_nextn.end() - static_cast<std::ptrdiff_t>(impl_->n_embd),
+                    impl_->S().history_h_nextn.end());
                 Status num_st = inspect_and_apply_numeric_policy(
                     h_check.data(),
                     static_cast<int64_t>(h_check.size()),
@@ -2842,7 +3450,7 @@ Result<std::vector<float>> LlamaCppBackend::forward_tokens(
     }
 
     std::vector<float> out(raw_logits, raw_logits + impl_->n_vocab);
-    impl_->last_sampled_token = DeterministicSampler::sample_greedy_argmax(out.data(), impl_->n_vocab);
+    impl_->S().last_sampled_token = DeterministicSampler::sample_greedy_argmax(out.data(), impl_->n_vocab);
 
     // P0.1: Enforce Section 4 NumericPolicy (NaN/Inf inspection & state invalidation) on output logits
     NumericHealthReport health{};
@@ -2874,6 +3482,29 @@ Result<std::vector<std::vector<float>>> LlamaCppBackend::forward_sequence_all_lo
         return Result<std::vector<std::vector<float>>>(
             ErrorCode::InvalidArgument, "input_tokens must not be empty");
     }
+    if (impl_->n_streams > 1 && input_tokens.size() <= static_cast<size_t>(impl_->active_n_rs_seq) + 1u) {
+        Impl::BatchOp op;
+        op.kind = Impl::BatchOp::Kind::Verify;
+        op.tokens = &input_tokens;
+        op.want_logits = !supports_gpu_greedy_sampling();
+        impl_->submit(op);
+        if (!op.st.ok()) {
+            return Result<std::vector<std::vector<float>>>(op.st);
+        }
+        if (!op.want_logits) {
+            for (const int32_t t : op.sampled) {
+                std::vector<float> row(impl_->n_vocab, 0.0f);
+                row[static_cast<size_t>(t)] = 1.0f;
+                op.logits.push_back(std::move(row));
+            }
+        }
+        if (op.logits.size() != input_tokens.size()) {
+            return Result<std::vector<std::vector<float>>>(ErrorCode::BackendError, "batched verify returned the wrong number of rows");
+        }
+        return Result<std::vector<std::vector<float>>>(std::move(op.logits));
+    }
+    Impl::GpuHold gpu_hold(impl_.get());
+    (void)impl_->settle_pads();
 
     const uint32_t max_batch = (impl_->opts.n_batch > 0) ? impl_->opts.n_batch : 512u;
     std::vector<int32_t> mutable_tokens = input_tokens;
@@ -2883,12 +3514,14 @@ Result<std::vector<std::vector<float>>> LlamaCppBackend::forward_sequence_all_lo
     for (size_t offset = 0; offset < mutable_tokens.size(); offset += max_batch) {
         const int32_t count = static_cast<int32_t>(
             std::min<size_t>(max_batch, mutable_tokens.size() - offset));
-        const size_t pos_before = impl_->history_tokens.size();
+        const size_t pos_before = impl_->S().history_tokens.size();
 
         // P0.2: Prefetch token rows in PleTableManager bounded pinned ring prior to llama_decode
         impl_->prefetch_ple_for_chunk(mutable_tokens.data() + offset, count);
 
         LlamaBatchRaw batch = impl_->llama_batch_get_one(mutable_tokens.data() + offset, count);
+        Impl::SeqArrays seq_arrays;
+        impl_->bind_batch_seq(batch, seq_arrays, pos_before);
         std::vector<int8_t> logits_flags(static_cast<size_t>(count), 1);
         batch.logits = logits_flags.data();
 
@@ -2906,8 +3539,8 @@ Result<std::vector<std::vector<float>>> LlamaCppBackend::forward_sequence_all_lo
                          pos_before, count, -1, step_ms);
         }
 
-        impl_->history_tokens.insert(
-            impl_->history_tokens.end(),
+        impl_->S().history_tokens.insert(
+            impl_->S().history_tokens.end(),
             mutable_tokens.begin() + static_cast<std::ptrdiff_t>(offset),
             mutable_tokens.begin() + static_cast<std::ptrdiff_t>(offset + count));
         impl_->record_target_h_nextn_and_dflash(count, pos_before);
@@ -2919,7 +3552,7 @@ Result<std::vector<std::vector<float>>> LlamaCppBackend::forward_sequence_all_lo
                     return Result<std::vector<std::vector<float>>>(
                         ErrorCode::BackendError, "llama_get_sampled_token_ith returned invalid token");
                 }
-                impl_->last_sampled_token = sampled;
+                impl_->S().last_sampled_token = sampled;
                 std::vector<float> row(impl_->n_vocab, 0.0f);
                 row[static_cast<size_t>(sampled)] = 1.0f;
                 all_logits.push_back(std::move(row));
@@ -2937,7 +3570,7 @@ Result<std::vector<std::vector<float>>> LlamaCppBackend::forward_sequence_all_lo
             }
             std::vector<float> row(raw_logits, raw_logits + impl_->n_vocab);
             if (i + 1 == count) {
-                impl_->last_sampled_token = DeterministicSampler::sample_greedy_argmax(row.data(), impl_->n_vocab);
+                impl_->S().last_sampled_token = DeterministicSampler::sample_greedy_argmax(row.data(), impl_->n_vocab);
                 NumericHealthReport health{};
                 Status num_st = inspect_and_apply_numeric_policy(
                     row.data(),
@@ -2962,17 +3595,17 @@ Result<std::vector<std::vector<float>>> LlamaCppBackend::forward_sequence_all_lo
 }
 
 bool LlamaCppBackend::supports_gpu_greedy_sampling() const noexcept {
-    return is_loaded() && impl_->ctx_sampler_chain != nullptr && impl_->gpu_sampler_attached &&
+    return is_loaded() && impl_->S().ctx_sampler_chain != nullptr && impl_->S().gpu_sampler_attached &&
            impl_->llama_get_sampled_token_ith != nullptr;
 }
 
 int32_t LlamaCppBackend::last_sampled_greedy_token() const noexcept {
-    return impl_ ? impl_->last_sampled_token : -1;
+    return impl_ ? impl_->S().last_sampled_token : -1;
 }
 
 void LlamaCppBackend::set_last_sampled_greedy_token(int32_t token_id) noexcept {
     if (impl_) {
-        impl_->last_sampled_token = token_id;
+        impl_->S().last_sampled_token = token_id;
     }
 }
 
@@ -2985,21 +3618,39 @@ Result<int32_t> LlamaCppBackend::forward_tokens_greedy(
     if (input_tokens.empty()) {
         return Result<int32_t>(ErrorCode::InvalidArgument, "input_tokens must not be empty");
     }
+    if (impl_->n_streams > 1 && input_tokens.size() == 1 && impl_->S().generating) {
+        Impl::BatchOp op;
+        op.kind = Impl::BatchOp::Kind::Verify;
+        op.tokens = &input_tokens;
+        impl_->submit(op);
+        if (!op.st.ok()) {
+            return Result<int32_t>(op.st);
+        }
+        if (op.sampled.size() != 1) {
+            return Result<int32_t>(ErrorCode::BackendError, "batched decode returned no token");
+        }
+        return Result<int32_t>(op.sampled.front());
+    }
+    Impl::GpuHold gpu_hold(impl_.get());
+    (void)impl_->settle_pads();
 
     const uint32_t max_batch = (impl_->opts.n_batch > 0) ? impl_->opts.n_batch : 512u;
     const uint32_t chunk_sz = (prefill_chunk_size == 0) ? max_batch : std::min(prefill_chunk_size, max_batch);
 
     std::vector<int32_t> mutable_tokens = input_tokens;
     std::vector<int8_t> zero_logits;
-    for (size_t offset = 0; offset < mutable_tokens.size(); offset += chunk_sz) {
+    for (size_t offset = 0, step = 0; offset < mutable_tokens.size(); offset += step) {
         const int32_t count = static_cast<int32_t>(
-            std::min<size_t>(chunk_sz, mutable_tokens.size() - offset));
-        const size_t pos_before = impl_->history_tokens.size();
+            std::min<size_t>(impl_->prefill_chunk_now(chunk_sz), mutable_tokens.size() - offset));
+        step = static_cast<size_t>(count);
+        const size_t pos_before = impl_->S().history_tokens.size();
         const bool is_last_chunk = (offset + static_cast<size_t>(count) >= mutable_tokens.size());
 
         impl_->prefetch_ple_for_chunk(mutable_tokens.data() + offset, count);
 
         LlamaBatchRaw batch = impl_->llama_batch_get_one(mutable_tokens.data() + offset, count);
+        Impl::SeqArrays seq_arrays;
+        impl_->bind_batch_seq(batch, seq_arrays, pos_before);
         if (!is_last_chunk) {
             // Skip the 1.04 GB output.weight (lm_head) matmul + sampler on all intermediate prefill chunks
             zero_logits.assign(static_cast<size_t>(count), 0);
@@ -3018,11 +3669,14 @@ Result<int32_t> LlamaCppBackend::forward_tokens_greedy(
                          pos_before, count, is_last_chunk ? 1 : 0, step_ms);
         }
 
-        impl_->history_tokens.insert(
-            impl_->history_tokens.end(),
+        impl_->S().history_tokens.insert(
+            impl_->S().history_tokens.end(),
             mutable_tokens.begin() + static_cast<std::ptrdiff_t>(offset),
             mutable_tokens.begin() + static_cast<std::ptrdiff_t>(offset + count));
         impl_->record_target_h_nextn_and_dflash(count, pos_before);
+        if (!is_last_chunk) {
+            impl_->gpu_yield(count);
+        }
     }
 
     if (input_tokens.size() > 1) {
@@ -3033,7 +3687,7 @@ Result<int32_t> LlamaCppBackend::forward_tokens_greedy(
     if (sampled < 0 || static_cast<uint64_t>(sampled) >= impl_->n_vocab) {
         return Result<int32_t>(ErrorCode::BackendError, "llama_get_sampled_token_ith returned invalid token");
     }
-    impl_->last_sampled_token = sampled;
+    impl_->S().last_sampled_token = sampled;
     impl_->telemetry.numeric_inspections++;
     impl_->telemetry.last_numeric_health.healthy = true;
     return Result<int32_t>(sampled);
@@ -3047,6 +3701,21 @@ Result<std::vector<int32_t>> LlamaCppBackend::forward_sequence_greedy_argmax(
     if (input_tokens.empty()) {
         return Result<std::vector<int32_t>>(ErrorCode::InvalidArgument, "input_tokens must not be empty");
     }
+    if (impl_->n_streams > 1 && input_tokens.size() <= static_cast<size_t>(impl_->active_n_rs_seq) + 1u) {
+        Impl::BatchOp op;
+        op.kind = Impl::BatchOp::Kind::Verify;
+        op.tokens = &input_tokens;
+        impl_->submit(op);
+        if (!op.st.ok()) {
+            return Result<std::vector<int32_t>>(op.st);
+        }
+        if (op.sampled.size() != input_tokens.size()) {
+            return Result<std::vector<int32_t>>(ErrorCode::BackendError, "batched verify returned the wrong number of rows");
+        }
+        return Result<std::vector<int32_t>>(std::move(op.sampled));
+    }
+    Impl::GpuHold gpu_hold(impl_.get());
+    (void)impl_->settle_pads();
 
     const uint32_t max_batch = (impl_->opts.n_batch > 0) ? impl_->opts.n_batch : 512u;
     std::vector<int32_t> mutable_tokens = input_tokens;
@@ -3056,11 +3725,13 @@ Result<std::vector<int32_t>> LlamaCppBackend::forward_sequence_greedy_argmax(
     for (size_t offset = 0; offset < mutable_tokens.size(); offset += max_batch) {
         const int32_t count = static_cast<int32_t>(
             std::min<size_t>(max_batch, mutable_tokens.size() - offset));
-        const size_t pos_before = impl_->history_tokens.size();
+        const size_t pos_before = impl_->S().history_tokens.size();
 
         impl_->prefetch_ple_for_chunk(mutable_tokens.data() + offset, count);
 
         LlamaBatchRaw batch = impl_->llama_batch_get_one(mutable_tokens.data() + offset, count);
+        Impl::SeqArrays seq_arrays;
+        impl_->bind_batch_seq(batch, seq_arrays, pos_before);
         std::vector<int8_t> logits_flags(static_cast<size_t>(count), 1);
         batch.logits = logits_flags.data();
 
@@ -3078,8 +3749,8 @@ Result<std::vector<int32_t>> LlamaCppBackend::forward_sequence_greedy_argmax(
                          pos_before, count, -1, step_ms);
         }
 
-        impl_->history_tokens.insert(
-            impl_->history_tokens.end(),
+        impl_->S().history_tokens.insert(
+            impl_->S().history_tokens.end(),
             mutable_tokens.begin() + static_cast<std::ptrdiff_t>(offset),
             mutable_tokens.begin() + static_cast<std::ptrdiff_t>(offset + count));
         impl_->record_target_h_nextn_and_dflash(count, pos_before);
@@ -3091,13 +3762,77 @@ Result<std::vector<int32_t>> LlamaCppBackend::forward_sequence_greedy_argmax(
                     ErrorCode::BackendError, "llama_get_sampled_token_ith returned invalid token at " + std::to_string(i));
             }
             sampled_tokens.push_back(sampled);
-            impl_->last_sampled_token = sampled;
+            impl_->S().last_sampled_token = sampled;
         }
         impl_->telemetry.numeric_inspections++;
         impl_->telemetry.last_numeric_health.healthy = true;
     }
 
     return Result<std::vector<int32_t>>(std::move(sampled_tokens));
+}
+
+uint32_t LlamaCppBackend::stream_count() const noexcept {
+    return impl_ ? impl_->n_streams : 1u;
+}
+
+void LlamaCppBackend::bind_stream(uint32_t stream) noexcept {
+    Impl::tls_stream() = (impl_ && stream < impl_->n_streams) ? stream : 0u;
+}
+
+std::vector<int32_t> LlamaCppBackend::stream_context_tokens(uint32_t stream) const {
+    if (!impl_ || stream >= impl_->streams.size()) {
+        return {};
+    }
+    return impl_->streams[stream].history_tokens;
+}
+
+void LlamaCppBackend::begin_generation() noexcept {
+    if (!impl_) return;
+    std::lock_guard<std::mutex> lk(impl_->q_mu);
+    auto& st = impl_->S();
+    if (!st.generating) {
+        st.generating = true;
+        ++impl_->n_generating;
+    }
+}
+
+void LlamaCppBackend::end_generation() noexcept {
+    if (!impl_) return;
+    {
+        std::lock_guard<std::mutex> lk(impl_->q_mu);
+        auto& st = impl_->S();
+        if (st.generating) {
+            st.generating = false;
+            --impl_->n_generating;
+        }
+    }
+    impl_->q_cv.notify_all();
+}
+
+uint32_t LlamaCppBackend::generating_streams() const noexcept {
+    if (!impl_) return 0;
+    std::lock_guard<std::mutex> lk(impl_->q_mu);
+    return impl_->n_generating;
+}
+
+uint32_t LlamaCppBackend::shared_draft_k() const noexcept {
+    const uint32_t n = generating_streams();
+    if (n <= 1) {
+        return 0;
+    }
+    static const uint32_t forced = [] {
+        const char* e = std::getenv("SIXI_MULTI_K");
+        return (e != nullptr && *e != '\0') ? static_cast<uint32_t>(std::max(1L, std::atol(e))) : 0u;
+    }();
+    if (forced > 0) {
+        return forced;
+    }
+    // Thor, Qwen3.8-27B, DSpine (2026-11-10): a shared pass costs ~105 ms for 16 rows plus ~27 ms per further
+    // 8-row tile, while most accepted tokens come from the first drafts. About 6 rows per stream, rounded up to
+    // fill the last tile, was the best aggregate: 2 streams k=7 (63.7 tok/s; k=15 55.4), 4 streams k=5 (94.1;
+    // k=7 91.4, k=15 69.8).
+    const uint32_t total_rows = 8u * ((6u * n + 7u) / 8u);
+    return std::max(3u, total_rows / n - 1u);
 }
 
 bool LlamaCppBackend::supports_fast_prefix_rollback() const noexcept {
@@ -3109,16 +3844,18 @@ uint32_t LlamaCppBackend::fast_rollback_window() const noexcept {
 }
 
 uint64_t LlamaCppBackend::current_seq_len() const noexcept {
-    return impl_ ? static_cast<uint64_t>(impl_->history_tokens.size()) : 0ULL;
+    return impl_ ? static_cast<uint64_t>(impl_->S().history_tokens.size()) : 0ULL;
 }
 
 Status LlamaCppBackend::rollback_to_position(uint64_t target_seq_len) {
     if (!is_loaded()) {
         return Status::Error(ErrorCode::BackendError, "LlamaCppBackend model is not loaded");
     }
-    if (target_seq_len >= impl_->history_tokens.size()) {
-        return Status::Ok();
+    Impl::GpuHold gpu_hold(impl_.get());
+    if (target_seq_len >= impl_->S().history_tokens.size()) {
+        return impl_->settle_pads();
     }
+    impl_->S().phys_extra = 0;   // the seq_rm below removes the pad rows together with the rejected tokens
     if (impl_->llama_memory_seq_rm == nullptr) {
         return Status::Error(ErrorCode::BackendError, "llama_memory_seq_rm not available");
     }
@@ -3126,28 +3863,28 @@ Status LlamaCppBackend::rollback_to_position(uint64_t target_seq_len) {
     if (mem == nullptr) {
         return Status::Error(ErrorCode::BackendError, "llama_get_memory returned null");
     }
-    const bool ok = impl_->llama_memory_seq_rm(mem, 0, static_cast<int32_t>(target_seq_len), -1);
+    const bool ok = impl_->llama_memory_seq_rm(mem, impl_->seq(), static_cast<int32_t>(target_seq_len), -1);
     if (!ok) {
         return Status::Error(
             ErrorCode::BackendError,
             "llama_memory_seq_rm failed to roll back to position " + std::to_string(target_seq_len));
     }
-    impl_->history_tokens.resize(static_cast<size_t>(target_seq_len));
-    if (impl_->n_embd > 0 && impl_->history_h_nextn.size() > target_seq_len * impl_->n_embd) {
-        impl_->history_h_nextn.resize(static_cast<size_t>(target_seq_len) * impl_->n_embd);
+    impl_->S().history_tokens.resize(static_cast<size_t>(target_seq_len));
+    if (impl_->n_embd > 0 && impl_->S().history_h_nextn.size() > target_seq_len * impl_->n_embd) {
+        impl_->S().history_h_nextn.resize(static_cast<size_t>(target_seq_len) * impl_->n_embd);
     }
-    if (impl_->ctx_mtp != nullptr && impl_->mtp_synced_len > target_seq_len) {
+    if (impl_->ctx_mtp != nullptr && impl_->S().mtp_synced_len > target_seq_len) {
         void* mem_mtp = impl_->llama_get_memory(impl_->ctx_mtp);
         if (mem_mtp != nullptr) {
-            (void)impl_->llama_memory_seq_rm(mem_mtp, 0, static_cast<int32_t>(target_seq_len), -1);
-            impl_->mtp_synced_len = static_cast<size_t>(target_seq_len);
+            (void)impl_->llama_memory_seq_rm(mem_mtp, impl_->seq(), static_cast<int32_t>(target_seq_len), -1);
+            impl_->S().mtp_synced_len = static_cast<size_t>(target_seq_len);
         }
     }
-    if (impl_->ctx_dflash != nullptr && impl_->dflash_synced_len > target_seq_len) {
+    if (impl_->ctx_dflash != nullptr && impl_->S().dflash_synced_len > target_seq_len) {
         void* mem_dflash = impl_->llama_get_memory(impl_->ctx_dflash);
         if (mem_dflash != nullptr) {
-            (void)impl_->llama_memory_seq_rm(mem_dflash, 0, static_cast<int32_t>(target_seq_len), -1);
-            impl_->dflash_synced_len = static_cast<size_t>(target_seq_len);
+            (void)impl_->llama_memory_seq_rm(mem_dflash, impl_->seq(), static_cast<int32_t>(target_seq_len), -1);
+            impl_->S().dflash_synced_len = static_cast<size_t>(target_seq_len);
         }
     }
     return Status::Ok();
@@ -3208,16 +3945,29 @@ Result<std::vector<int32_t>> LlamaCppBackend::draft_embedded_mtp(int32_t first_t
         return Result<std::vector<int32_t>>(std::vector<int32_t>{});
     }
 
+    if (impl_->n_streams > 1 && impl_->ctx_dflash != nullptr) {
+        Impl::BatchOp op;
+        op.kind = Impl::BatchOp::Kind::Draft;
+        op.first_token = first_token;
+        op.k = k;
+        impl_->submit(op);
+        if (!op.st.ok()) {
+            return Result<std::vector<int32_t>>(op.st);
+        }
+        return Result<std::vector<int32_t>>(std::move(op.drafted));
+    }
+    Impl::GpuHold gpu_hold(impl_.get());
+
     // P2.4: External DFlash2 block-diffusion denoising path when ctx_dflash is loaded
     if (impl_->ctx_dflash != nullptr) {
-        const size_t N = impl_->history_tokens.size();
+        const size_t N = impl_->S().history_tokens.size();
         impl_->telemetry.dflash_draft_calls++;
-        if (impl_->dflash_synced_len != N) {
+        if (impl_->S().dflash_synced_len != N) {
             // The draft KV must hold features for every target position < N (upstream `begin()` invariant)
             impl_->telemetry.dflash_draft_unsynced++;
             return Result<std::vector<int32_t>>(
                 ErrorCode::StateInvalidated,
-                "DFlash draft KV covers " + std::to_string(impl_->dflash_synced_len) + " of " + std::to_string(N) + " target positions");
+                "DFlash draft KV covers " + std::to_string(impl_->S().dflash_synced_len) + " of " + std::to_string(N) + " target positions");
         }
         const uint32_t max_dft = static_cast<uint32_t>(std::max(1, impl_->dflash_max_drafts()));
         const uint32_t n_draft = std::min(k, max_dft);
@@ -3228,7 +3978,7 @@ Result<std::vector<int32_t>> LlamaCppBackend::draft_embedded_mtp(int32_t first_t
         std::vector<int32_t> blk_tokens(static_cast<size_t>(n_block_tokens));
         std::vector<int32_t> blk_pos(static_cast<size_t>(n_block_tokens));
         std::vector<int32_t> blk_n_seq(static_cast<size_t>(n_block_tokens), 1);
-        int32_t seq_zero = 0;
+        int32_t seq_zero = impl_->seq();
         std::vector<int32_t*> blk_seq_ptr(static_cast<size_t>(n_block_tokens), &seq_zero);
         std::vector<int8_t> blk_logits(static_cast<size_t>(n_block_tokens), impl_->dflash_is_v2 ? 0 : 1);
 
@@ -3310,31 +4060,31 @@ Result<std::vector<int32_t>> LlamaCppBackend::draft_embedded_mtp(int32_t first_t
         }
         void* mem_dflash = impl_->llama_get_memory(impl_->ctx_dflash);
         if (mem_dflash != nullptr && impl_->llama_memory_seq_rm != nullptr) {
-            (void)impl_->llama_memory_seq_rm(mem_dflash, 0, static_cast<int32_t>(N), -1);
+            (void)impl_->llama_memory_seq_rm(mem_dflash, impl_->seq(), static_cast<int32_t>(N), -1);
         }
         return Result<std::vector<int32_t>>(std::move(drafted));
     }
 
-    const size_t N = impl_->history_tokens.size();
+    const size_t N = impl_->S().history_tokens.size();
     const size_t n_embd = static_cast<size_t>(impl_->n_embd);
-    if (N == 0 || impl_->history_h_nextn.size() < N * n_embd) {
+    if (N == 0 || impl_->S().history_h_nextn.size() < N * n_embd) {
         return Result<std::vector<int32_t>>(
             ErrorCode::InvalidArgument, "Target nextn hidden states are not populated for MTP drafting");
     }
-    if (impl_->mtp_synced_len > 0 && std::min(impl_->mtp_synced_len, N) - 1 < impl_->h_valid_from) {
+    if (impl_->S().mtp_synced_len > 0 && std::min(impl_->S().mtp_synced_len, N) - 1 < impl_->S().h_valid_from) {
         return Result<std::vector<int32_t>>(
             ErrorCode::StateInvalidated, "MTP catch-up would need hidden rows that predate the restored snapshot");
     }
 
-    if (impl_->mtp_synced_len > N) {
+    if (impl_->S().mtp_synced_len > N) {
         void* mem_mtp = impl_->llama_get_memory(impl_->ctx_mtp);
         if (mem_mtp != nullptr && impl_->llama_memory_seq_rm != nullptr) {
-            (void)impl_->llama_memory_seq_rm(mem_mtp, 0, static_cast<int32_t>(N), -1);
-            impl_->mtp_synced_len = N;
+            (void)impl_->llama_memory_seq_rm(mem_mtp, impl_->seq(), static_cast<int32_t>(N), -1);
+            impl_->S().mtp_synced_len = N;
         }
     }
 
-    const size_t start_pos = impl_->mtp_synced_len;
+    const size_t start_pos = impl_->S().mtp_synced_len;
     const size_t total_catchup_plus_first = (N - start_pos) + 1u;
     const size_t max_batch = (impl_->opts.n_batch > 0) ? static_cast<size_t>(impl_->opts.n_batch) : 512u;
 
@@ -3358,9 +4108,9 @@ Result<std::vector<int32_t>> LlamaCppBackend::draft_embedded_mtp(int32_t first_t
 
         for (size_t i = 0; i < count; ++i) {
             const size_t p = start_pos + offset + i;
-            chunk_tokens[i] = (p < N) ? impl_->history_tokens[p] : first_token;
+            chunk_tokens[i] = (p < N) ? impl_->S().history_tokens[p] : first_token;
             if (p > 0) {
-                const float* src_h = impl_->history_h_nextn.data() + (p - 1u) * n_embd;
+                const float* src_h = impl_->S().history_h_nextn.data() + (p - 1u) * n_embd;
                 std::memcpy(chunk_embd.data() + i * n_embd, src_h, n_embd * sizeof(float));
             }
             if (p == N) {
@@ -3382,7 +4132,7 @@ Result<std::vector<int32_t>> LlamaCppBackend::draft_embedded_mtp(int32_t first_t
     }
 
     // Position N was decoded with true first_token and true h_tgt[N - 1]
-    impl_->mtp_synced_len = N + 1u;
+    impl_->S().mtp_synced_len = N + 1u;
 
     auto sample_mtp_greedy = [&]() -> int32_t {
         if (impl_->mtp_sampler_chain != nullptr && impl_->llama_get_sampled_token_ith != nullptr) {
@@ -3442,7 +4192,7 @@ Result<std::vector<int32_t>> LlamaCppBackend::draft_embedded_mtp(int32_t first_t
         // Remove speculative positions >= N + 1 from ctx_mtp KV cache
         void* mem_mtp = impl_->llama_get_memory(impl_->ctx_mtp);
         if (mem_mtp != nullptr && impl_->llama_memory_seq_rm != nullptr) {
-            (void)impl_->llama_memory_seq_rm(mem_mtp, 0, static_cast<int32_t>(N + 1u), -1);
+            (void)impl_->llama_memory_seq_rm(mem_mtp, impl_->seq(), static_cast<int32_t>(N + 1u), -1);
         }
     }
 

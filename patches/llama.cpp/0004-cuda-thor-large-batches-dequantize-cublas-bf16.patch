@@ -1,0 +1,40 @@
+diff --git a/ggml/src/ggml-cuda/mmq.cu b/ggml/src/ggml-cuda/mmq.cu
+index 367657508..4e7a0ab69 100644
+--- a/ggml/src/ggml-cuda/mmq.cu
++++ b/ggml/src/ggml-cuda/mmq.cu
+@@ -439,6 +439,19 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
+         }
+     }
+ 
++    if (GGML_CUDA_CC_IS_NVIDIA(cc) && cc == GGML_CUDA_CC_THOR) {
++        // Thor: MMQ is compute bound from ~128 rows (prefill); above this row count the weights are dequantized and
++        // multiplied by cuBLAS on the tensor cores instead (BF16): one forward of 256 / 384 / 1024 / 2048 rows is
++        // 619 / 915 / 2421 / 4932 ms with MMQ and 620 / 703 / 1348 / 2182 ms here. GGML_CUDA_THOR_BLAS_MIN_ROWS (0 = never).
++        static const int64_t blas_min_rows = [] {
++            const char * e = getenv("GGML_CUDA_THOR_BLAS_MIN_ROWS");
++            return e ? (int64_t) atoll(e) : (int64_t) 320;
++        }();
++        if (blas_min_rows > 0 && ne11 >= blas_min_rows) {
++            return false;
++        }
++    }
++
+     if (turing_mma_available(cc)) {
+         return true;
+     }
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -1873,6 +1873,12 @@
+     ggml_type compute_type = src0->type;
+     if (ggml_is_quantized(compute_type)) {
+         compute_type = fast_fp16_hardware_available(cc) ? GGML_TYPE_F16 : GGML_TYPE_F32;
++        if (GGML_CUDA_CC_IS_NVIDIA(cc) && cc == GGML_CUDA_CC_THOR) {
++            // Thor routes large batches of quantized weights here (ggml_cuda_should_use_mmq). BF16 keeps the FP32
++            // exponent range, so an outlier activation cannot overflow to inf as it could in F16, and is the faster
++            // tensor-core path here (2048 rows: 2182 ms vs 2271 ms); perplexity matches MMQ (5.056 vs 5.061).
++            compute_type = GGML_TYPE_BF16;
++        }
+     } else if (compute_type == GGML_TYPE_F16 && !fast_fp16_hardware_available(cc)) {
+         compute_type = GGML_TYPE_F32;
+     } else if (compute_type == GGML_TYPE_BF16 && !fast_bf16_hardware_available(cc)) {
