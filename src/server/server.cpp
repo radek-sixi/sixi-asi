@@ -1,4 +1,5 @@
 #include "sixi_asi/server.hpp"
+#include <regex>
 #include "sixi_asi/numeric.hpp"
 
 #include <algorithm>
@@ -1334,6 +1335,25 @@ Status parse_chat_request(const ojson& j, const std::string& default_model, uint
         if (j.contains("presence_penalty") && j["presence_penalty"].is_number()) req.sampling.presence_penalty = j["presence_penalty"].get<float>();
         if (j.contains("seed") && j["seed"].is_number_integer()) req.sampling.seed = static_cast<uint64_t>(j["seed"].get<int64_t>());
         if (j.contains("stream") && j["stream"].is_boolean()) req.stream = j["stream"].get<bool>();
+        if (j.contains("n") && j["n"].is_number_integer()) {
+            const int64_t n = j["n"].get<int64_t>();
+            if (n < 1 || n > 16) {
+                return Status::Error(ErrorCode::InvalidArgument, "'n' must be between 1 and 16");
+            }
+            req.n = static_cast<uint32_t>(n);
+        }
+        if (j.contains("vote")) {
+            const auto& v = j["vote"];
+            if (v.is_boolean()) {
+                req.vote = v.get<bool>();
+            } else if (v.is_object()) {
+                req.vote = true;
+                if (v.contains("answer_regex") && v["answer_regex"].is_string()) req.vote_regex = v["answer_regex"].get<std::string>();
+                if (v.contains("stop_on_agreement") && v["stop_on_agreement"].is_boolean()) req.vote_stop_on_agreement = v["stop_on_agreement"].get<bool>();
+            } else {
+                return Status::Error(ErrorCode::InvalidArgument, "'vote' must be a boolean or an object");
+            }
+        }
         if (j.contains("stop_on_loop") && j["stop_on_loop"].is_boolean()) req.stop_on_loop = j["stop_on_loop"].get<bool>();
         if (j.contains("stop_on_reasoning_loop") && j["stop_on_reasoning_loop"].is_boolean()) req.stop_on_reasoning_loop = j["stop_on_reasoning_loop"].get<bool>();
         if (j.contains("include_rendered_prompt") && j["include_rendered_prompt"].is_boolean()) req.include_rendered_prompt = j["include_rendered_prompt"].get<bool>();
@@ -1385,6 +1405,9 @@ struct SixiServer::Impl {
     std::atomic<bool> running{false};
 
     mutable std::mutex backend_mutex;
+    // Long prompt prefills run one after another (first come, first served) but outside backend_mutex, so that a
+    // request whose prompt is already cached is not queued behind another agent's cold document load.
+    std::mutex long_prefill_mutex;
     mutable std::mutex metrics_mutex;
 
     // Parallel streams (backend->stream_count() > 1): a request leases one backend stream for its lifetime.
@@ -1595,6 +1618,60 @@ struct SixiServer::Impl {
         return auth == "Bearer " + cfg.api_key;
     }
 
+    // Answer of one sample for a vote: the last match of the caller's regex (group 1 if it has one); without a
+    // regex the last \boxed{...}, else the last number, else the whole text. Whitespace and digit separators are
+    // dropped so that "1,024", "1024" and " 1024 " are the same vote.
+    static std::string vote_key(const std::string& content, const std::string& regex) {
+        auto squeeze = [](std::string v) {
+            std::string out;
+            for (const char c : v) {
+                if (c == ' ' || c == '\n' || c == '\t' || c == '\r' || c == ',' || c == '$') continue;
+                out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+            }
+            return out;
+        };
+        if (!regex.empty()) {
+            try {
+                const std::regex re(regex);
+                std::string last;
+                for (auto it = std::sregex_iterator(content.begin(), content.end(), re); it != std::sregex_iterator(); ++it) {
+                    last = (it->size() > 1 && (*it)[1].matched) ? (*it)[1].str() : it->str();
+                }
+                if (!last.empty()) return squeeze(last);
+            } catch (const std::regex_error&) {
+                // fall through to the default rule
+            }
+        }
+        const size_t b = content.rfind("\\boxed{");
+        if (b != std::string::npos) {
+            size_t i = b + 7;
+            int depth = 1;
+            std::string inner;
+            for (; i < content.size() && depth > 0; ++i) {
+                if (content[i] == '{') ++depth;
+                else if (content[i] == '}') { if (--depth == 0) break; }
+                inner.push_back(content[i]);
+            }
+            if (!inner.empty()) return squeeze(inner);
+        }
+        {
+            static const std::regex num(R"(-?\d[\d,]*(?:\.\d+)?)");
+            std::string last;
+            for (auto it = std::sregex_iterator(content.begin(), content.end(), num); it != std::sregex_iterator(); ++it) {
+                last = it->str();
+            }
+            if (!last.empty()) {
+                std::string v = squeeze(last);
+                if (v.find('.') != std::string::npos) {
+                    while (!v.empty() && v.back() == '0') v.pop_back();
+                    if (!v.empty() && v.back() == '.') v.pop_back();
+                }
+                return v;
+            }
+        }
+        return squeeze(content).substr(0, 256);
+    }
+
     static void send_error(httplib::Response& res, int status, ErrorCode code, const std::string& message) {
         json err;
         err["error"] = {
@@ -1789,7 +1866,26 @@ SixiServer::SixiServer(
             return;
         }
 
+        if (chat_req.n > 1 && chat_req.stream) {
+            impl_->total_requests.fetch_add(1, std::memory_order_relaxed);
+            Impl::send_error(http_res, 400, ErrorCode::InvalidArgument, "'n' > 1 is not supported with 'stream'");
+            return;
+        }
+        if (chat_req.n > impl_->cfg.max_concurrent_requests) {
+            impl_->total_requests.fetch_add(1, std::memory_order_relaxed);
+            Impl::send_error(http_res, 400, ErrorCode::InvalidArgument,
+                             "'n' exceeds --max-concurrent (" + std::to_string(impl_->cfg.max_concurrent_requests) + ")");
+            return;
+        }
+
         if (chat_req.stream) {
+            // A client that sends its next request the moment the previous answer ends can arrive before that
+            // request has released its slot (8 clients in lockstep: 8 finishing + 8 arriving). Give the slot a
+            // moment before answering 429.
+            for (int waited_ms = 0; waited_ms < 250 &&
+                 impl_->active_requests.load(std::memory_order_acquire) >= impl_->cfg.max_concurrent_requests; ++waited_ms) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
             if (impl_->active_requests.load(std::memory_order_acquire) >= impl_->cfg.max_concurrent_requests) {
                 impl_->total_requests.fetch_add(1, std::memory_order_relaxed);
                 impl_->admission_rejected_requests.fetch_add(1, std::memory_order_relaxed);
@@ -1833,8 +1929,81 @@ SixiServer::SixiServer(
             return;
         }
 
-        auto res = handle_chat_completion(chat_req);
-        if (!res.ok()) {
+        // n choices: n samples of the same prompt with seeds seed .. seed + n - 1. Each takes a backend stream, so
+        // with --parallel >= n they decode in shared forward passes; the prompt is prefilled once (the other samples
+        // restore it from the prefix cache).
+        // With "vote" the samples vote on the answer; once more than half of them agree the rest is cancelled, so
+        // the request takes about as long as its second-fastest agreeing sample instead of its slowest one.
+        std::vector<Result<ChatCompletionResponse>> results;
+        results.reserve(chat_req.n);
+        const bool voting = chat_req.vote && chat_req.n > 1;
+        std::mutex vote_mu;
+        std::vector<std::string> vote_answer(chat_req.n);     // answer key per sample ("" = none yet / cancelled)
+        std::vector<int> vote_order;                          // samples in the order they finished with an answer
+        std::unique_ptr<std::atomic<bool>[]> vote_cancel(new std::atomic<bool>[chat_req.n]);
+        for (uint32_t i = 0; i < chat_req.n; ++i) vote_cancel[i].store(false);
+        if (chat_req.n == 1) {
+            results.push_back(handle_chat_completion(chat_req));
+        } else {
+            for (uint32_t i = 0; i < chat_req.n; ++i) {
+                results.emplace_back(ErrorCode::BackendError, "not run");
+            }
+            std::vector<std::thread> workers;
+            for (uint32_t i = 0; i < chat_req.n; ++i) {
+                workers.emplace_back([&, i] {
+                    ChatCompletionRequest sub = chat_req;
+                    sub.n = 1;
+                    sub.vote = false;
+                    sub.sampling.seed = chat_req.sampling.seed + i;
+                    if (!sub.request_id.empty()) {
+                        sub.request_id += "-" + std::to_string(i);
+                    }
+                    results[i] = handle_chat_completion(sub, voting ? &vote_cancel[i] : nullptr);
+                    // only a sample that finished its answer votes (not one cut at the token limit or cancelled)
+                    if (!voting || !results[i].ok() || results[i].value().finish_reason != "stop") {
+                        return;
+                    }
+                    const std::string key = Impl::vote_key(results[i].value().content, chat_req.vote_regex);
+                    if (key.empty()) {
+                        return;
+                    }
+                    std::lock_guard<std::mutex> lk(vote_mu);
+                    vote_answer[i] = key;
+                    vote_order.push_back(static_cast<int>(i));
+                    size_t same = 0;
+                    for (const int j : vote_order) same += (vote_answer[static_cast<size_t>(j)] == key) ? 1u : 0u;
+                    if (chat_req.vote_stop_on_agreement && same * 2 > chat_req.n) {
+                        for (uint32_t j = 0; j < chat_req.n; ++j) vote_cancel[j].store(true, std::memory_order_release);
+                    }
+                });
+                if (i == 0) {
+                    // let the first sample take the prefill; the others then find the prompt in the prefix cache
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                }
+            }
+            for (auto& w : workers) {
+                w.join();
+            }
+        }
+        // the winner of a vote: the most frequent answer (the earliest finished among equals), and the first
+        // sample that gave it
+        int vote_winner = -1;
+        size_t vote_count = 0;
+        if (voting) {
+            for (const int i : vote_order) {
+                size_t same = 0;
+                for (const int j : vote_order) same += (vote_answer[static_cast<size_t>(j)] == vote_answer[static_cast<size_t>(i)]) ? 1u : 0u;
+                if (same > vote_count) {
+                    vote_count = same;
+                    vote_winner = i;
+                }
+            }
+        }
+        for (size_t ri = 0; ri < results.size(); ++ri) {
+            const auto& res = results[ri];
+            if (res.ok() || (voting && vote_winner >= 0 && vote_cancel[ri].load(std::memory_order_acquire))) {
+                continue;   // a sample cancelled by the vote may end with an error state: it is not the answer
+            }
             json err;
             err["error"] = {
                 {"code", error_code_to_string(res.code())},
@@ -1847,28 +2016,51 @@ SixiServer::SixiServer(
             return;
         }
 
-        const ChatCompletionResponse& cr = res.value();
-        json tool_calls_arr = json::array();
-        for (const auto& tc : cr.tool_calls) {
-            tool_calls_arr.push_back({
-                {"id", tc.id},
-                {"type", "function"},
-                {"function", {
-                    {"name", tc.name},
-                    {"arguments", tc.arguments_json}
-                }},
-                {"syntax_repaired", tc.syntax_repaired},
-                {"deduplicated_skip", tc.deduplicated_skip}
-            });
-        }
-
-        json msg_obj = {
-            {"role", "assistant"},
-            {"content", cr.content},
-            {"reasoning_content", cr.reasoning_content}
-        };
-        if (!tool_calls_arr.empty()) {
-            msg_obj["tool_calls"] = tool_calls_arr;
+        const ChatCompletionResponse& cr = results[(voting && vote_winner >= 0) ? static_cast<size_t>(vote_winner) : 0u].value();
+        json choices = json::array();
+        uint32_t completion_tokens = 0, reasoning_tokens = 0, answer_tokens = 0;
+        for (size_t ci = 0; ci < results.size(); ++ci) {
+            if (!results[ci].ok()) {
+                continue;
+            }
+            const ChatCompletionResponse& c = results[ci].value();
+            completion_tokens += c.completion_tokens;
+            reasoning_tokens += c.reasoning_tokens;
+            answer_tokens += c.answer_tokens;
+            if (voting && vote_winner >= 0 && static_cast<int>(ci) != vote_winner) {
+                continue;   // a vote returns the winning sample only (the usage counts every sample)
+            }
+            json tool_calls_arr = json::array();
+            for (const auto& tc : c.tool_calls) {
+                tool_calls_arr.push_back({
+                    {"id", tc.id},
+                    {"type", "function"},
+                    {"function", {
+                        {"name", tc.name},
+                        {"arguments", tc.arguments_json}
+                    }},
+                    {"syntax_repaired", tc.syntax_repaired},
+                    {"deduplicated_skip", tc.deduplicated_skip}
+                });
+            }
+            json msg_obj = {
+                {"role", "assistant"},
+                {"content", c.content},
+                {"reasoning_content", c.reasoning_content}
+            };
+            if (!tool_calls_arr.empty()) {
+                msg_obj["tool_calls"] = tool_calls_arr;
+            }
+            json choice = {
+                {"index", (voting && vote_winner >= 0) ? size_t{0} : ci},
+                {"message", msg_obj},
+                {"finish_reason", c.finish_reason}
+            };
+            if (results.size() > 1) {
+                choice["completion_tokens"] = c.completion_tokens;
+                choice["decode_tok_per_s"] = c.decode_tok_per_s;
+            }
+            choices.push_back(std::move(choice));
         }
 
         json out = {
@@ -1876,20 +2068,14 @@ SixiServer::SixiServer(
             {"object", "chat.completion"},
             {"created", static_cast<int64_t>(std::time(nullptr))},
             {"model", cr.model},
-            {"choices", json::array({
-                {
-                    {"index", 0},
-                    {"message", msg_obj},
-                    {"finish_reason", cr.finish_reason}
-                }
-            })},
+            {"choices", choices},
             {"usage", {
                 {"prompt_tokens", cr.prompt_tokens},
                 {"prompt_cached_tokens", cr.prompt_cached_tokens},
-                {"completion_tokens", cr.completion_tokens},
-                {"reasoning_tokens", cr.reasoning_tokens},
-                {"answer_tokens", cr.answer_tokens},
-                {"total_tokens", cr.prompt_tokens + cr.completion_tokens}
+                {"completion_tokens", completion_tokens},
+                {"reasoning_tokens", reasoning_tokens},
+                {"answer_tokens", answer_tokens},
+                {"total_tokens", cr.prompt_tokens + completion_tokens}
             }},
             {"metrics", {
                 {"ttft_ms", cr.ttft_ms},
@@ -1910,6 +2096,21 @@ SixiServer::SixiServer(
         };
         if (!cr.rendered_prompt.empty()) {
             out["debug"] = {{"rendered_prompt", cr.rendered_prompt}};
+        }
+        if (voting) {
+            json answers = json::array();
+            for (uint32_t i = 0; i < chat_req.n; ++i) {
+                const bool has = std::find(vote_order.begin(), vote_order.end(), static_cast<int>(i)) != vote_order.end();
+                answers.push_back(has ? json(vote_answer[i]) : json(nullptr));
+            }
+            out["vote"] = {
+                {"samples", chat_req.n},
+                {"finished", vote_order.size()},
+                {"answer", vote_winner >= 0 ? json(vote_answer[static_cast<size_t>(vote_winner)]) : json(nullptr)},
+                {"votes", vote_count},
+                {"chosen_sample", vote_winner},
+                {"answers", answers}
+            };
         }
 
         http_res.status = 200;
@@ -1983,6 +2184,10 @@ Result<ChatCompletionResponse> SixiServer::handle_chat_completion(
 
     // Atomic compare-and-increment for max_concurrent_requests enforcement
     uint64_t cur_active = impl_->active_requests.load(std::memory_order_acquire);
+    for (int waited_ms = 0; waited_ms < 250 && cur_active >= impl_->cfg.max_concurrent_requests; ++waited_ms) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));   // see the streaming pre-check: a slot being released
+        cur_active = impl_->active_requests.load(std::memory_order_acquire);
+    }
     while (true) {
         if (cur_active >= impl_->cfg.max_concurrent_requests) {
             impl_->admission_rejected_requests.fetch_add(1, std::memory_order_relaxed);
@@ -2130,6 +2335,14 @@ Result<ChatCompletionResponse> SixiServer::handle_chat_completion(
     impl_->backend->bind_stream(stream_id);
 
     std::unique_lock<std::mutex> backend_lock(impl_->backend_mutex);
+    // One exclusive device section for the whole setup (released before the decode loop or on any early return)
+    struct SetupSection {
+        core::IBackend* b;
+        bool on;
+        void end() noexcept { if (on) { on = false; b->end_setup(); } }
+        ~SetupSection() { end(); }
+    } setup_section{impl_->backend.get(), n_streams > 1};
+    if (setup_section.on) impl_->backend->begin_setup();
     impl_->backend->set_gpu_greedy_sampling_enabled(greedy);
 
     const auto t_start = std::chrono::steady_clock::now();
@@ -2190,7 +2403,25 @@ Result<ChatCompletionResponse> SixiServer::handle_chat_completion(
         for (const size_t cut : cuts) {
             std::vector<int32_t> delta(prompt_tokens.begin() + static_cast<std::ptrdiff_t>(pos),
                                        prompt_tokens.begin() + static_cast<std::ptrdiff_t>(cut));
+            // A long prefill of one stream must not block the setup of other requests: 16 agents with 17k-token
+            // documents loaded one after another for 8 minutes, and the follow-up questions of the agents that were
+            // already loaded waited behind the remaining loads (median 223 s; 0.4 s once all were loaded). The
+            // stream is leased, so its prefill needs neither the lock nor the setup section; the backend hands the
+            // device to waiting requests between chunks.
+            const bool release = n_streams > 1 && delta.size() >= 1024 && backend_lock.owns_lock();
+            std::unique_lock<std::mutex> long_lock;
+            if (release) {
+                setup_section.end();
+                backend_lock.unlock();
+                long_lock = std::unique_lock<std::mutex>(impl_->long_prefill_mutex);
+            }
             auto fw = impl_->backend->forward_tokens(delta, 0);   // 0: the backend's largest chunk (n_batch)
+            if (release) {
+                long_lock.unlock();
+                backend_lock.lock();
+                setup_section.on = true;
+                impl_->backend->begin_setup();
+            }
             if (!fw.ok()) {
                 if (fw.code() == ErrorCode::NumericNaNOrInf) {
                     impl_->numeric_error_requests.fetch_add(1, std::memory_order_relaxed);
@@ -2425,6 +2656,7 @@ Result<ChatCompletionResponse> SixiServer::handle_chat_completion(
     if (n_streams > 1) {
         // The prefill and the shared prefix-cache bookkeeping are done: other requests may start, and this
         // stream's draft / verify passes are batched with those of the other generating streams.
+        setup_section.end();
         backend_lock.unlock();
         impl_->backend->begin_generation();
     }

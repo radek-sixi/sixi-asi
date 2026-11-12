@@ -184,6 +184,14 @@ struct ChatCompletionRequest {
     TokenBudgetConfig budgets;
     core::SamplingParams sampling;
     bool stream = false;
+    uint32_t n = 1;                         // choices per request: n samples with seeds seed..seed+n-1, decoded as parallel streams (non-streaming only)
+    // n > 1 with "vote": the samples vote on the answer and the response carries one choice, a sample that gave the
+    // winning answer. The answer of a sample is the last match of vote_regex (group 1 if it has one); without a
+    // regex: the last \boxed{...}, else the last number, else the whole text. With vote_stop_on_agreement the other
+    // samples are cancelled as soon as more than half of the n agree.
+    bool vote = false;
+    std::string vote_regex;
+    bool vote_stop_on_agreement = true;
     bool stop_on_loop = false;              // answer-span cycle -> finish_reason "loop_detected" (else diagnostics only)
     bool stop_on_reasoning_loop = true;     // think-span cycle -> force </think> and continue with the answer
     bool enable_thinking = true;

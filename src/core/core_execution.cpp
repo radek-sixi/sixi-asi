@@ -1,5 +1,6 @@
 #include "sixi_asi/core_execution.hpp"
 #include "sixi_asi/offload.hpp"
+#include "sixi_asi/memory_planner.hpp"
 #if defined(SIXI_HAS_CUDA) && SIXI_HAS_CUDA
 #include "sixi_asi/cuda_kernels.hpp"
 #endif
@@ -1209,6 +1210,7 @@ using fn_llama_memory_clear_t = void (*)(void*, bool);
 using fn_llama_memory_seq_rm_t = bool (*)(void*, int32_t, int32_t, int32_t);
 using fn_llama_memory_seq_cp_t = void (*)(void*, int32_t, int32_t, int32_t, int32_t);
 using fn_llama_n_rs_seq_t = uint32_t (*)(const void*);
+using fn_llama_model_memory_size_t = uint64_t (*)(const void*, uint32_t, uint32_t, uint32_t);
 using fn_llama_model_n_embd_t = int32_t (*)(const void*);
 using fn_llama_model_rope_type_t = int32_t (*)(const void*);
 using fn_llama_model_n_layer_nextn_t = int32_t (*)(const void*);
@@ -1330,6 +1332,9 @@ struct LlamaCppBackend::Impl {
     int32_t dflash_block_size = 16;
     int32_t dflash_mask_token_id = 0;
     int32_t dflash_selector_top_k = 0;   // > 0: DFlash2 (dsv4) candidate-lattice drafter
+    // Block drafter rows sampled (argmax) on the device: without it every draft pass copies rows x vocab logits to
+    // the host (1 MB per row: 15 MB for one stream, 128 MB for 32 streams x 4 rows) and scans them on the CPU.
+    bool dflash_gpu_sampler = false;
     bool dflash_anchor_first = false;    // DSpark (sample_from_anchor): block = [anchor, mask...], drafts read from row 0
     bool dflash_has_conf = false;        // DSpark confidence head: per-row acceptance estimate in the nextn embeddings
     bool dflash_is_v2 = false;
@@ -1352,6 +1357,7 @@ struct LlamaCppBackend::Impl {
         size_t dflash_synced_len = 0;
         int32_t last_sampled_token = -1;
         void* ctx_sampler_chain = nullptr;
+        void* dft_sampler_chain = nullptr;   // greedy chain of this stream's sequence in the block drafter context
         bool gpu_sampler_attached = false;
         bool generating = false;
         // Pad rows of the last shared verify pass still present in the target memory and the drafter KV beyond
@@ -1395,6 +1401,12 @@ struct LlamaCppBackend::Impl {
     std::thread::id gpu_owner{};
     uint32_t gpu_depth = 0;
     bool leader_active = false;
+    // Threads waiting for the GPU outside a shared pass (prefill chunk, snapshot restore, rollback). They go before
+    // the next pass: a stream that waits here is missing from the pass, and a missing sequence id splits the pass
+    // into one weight read per run of consecutive ids. Without this a new request raced ~30 re-queueing streams for
+    // the lock and waited many passes (32 streams: 6 of 32 absent per pass on average, 2-10 runs per pass).
+    uint32_t excl_waiting = 0;
+    double last_pass_ms = 0.0;   // duration of the last shared pass (rendezvous window scale)
     uint32_t n_generating = 0;
     std::vector<BatchOp*> pending;
 
@@ -1402,7 +1414,9 @@ struct LlamaCppBackend::Impl {
         std::unique_lock<std::mutex> lk(q_mu);
         const auto me = std::this_thread::get_id();
         if (gpu_busy && gpu_owner == me) { ++gpu_depth; return; }
+        ++excl_waiting;
         q_cv.wait(lk, [&] { return !gpu_busy; });
+        --excl_waiting;
         gpu_busy = true; gpu_owner = me; gpu_depth = 1;
     }
     void gpu_release() {
@@ -1425,14 +1439,22 @@ struct LlamaCppBackend::Impl {
     // stalling them for the whole prefill.
     void gpu_yield(int32_t chunk_rows) {
         std::unique_lock<std::mutex> lk(q_mu);
-        if (n_generating == 0 || gpu_depth != 1 || gpu_owner != std::this_thread::get_id()) return;
+        if ((n_generating == 0 && excl_waiting == 0) || gpu_depth == 0 || gpu_owner != std::this_thread::get_id()) return;
+        const uint32_t depth = gpu_depth;   // nested holds of this thread (request setup section + the prefill itself)
         gpu_busy = false; gpu_owner = std::thread::id{}; gpu_depth = 0;
         q_cv.notify_all();
+        if (excl_waiting > 0) {
+            // another request is waiting for the device (the setup of a request whose prompt is cached takes a few
+            // hundred ms): let it in before the next chunk of this prefill
+            q_cv.wait_for(lk, std::chrono::seconds(2), [&] { return excl_waiting == 0 && !gpu_busy; });
+        }
         const auto slice = std::chrono::milliseconds(std::clamp<int64_t>(static_cast<int64_t>(chunk_rows) * 3 / 2, 50, 2000));
-        q_cv.wait_for(lk, slice, [&] { return n_generating == 0; });
+        if (n_generating > 0) {
+            q_cv.wait_for(lk, slice, [&] { return n_generating == 0; });
+        }
         // not between a draft pass and its verify pass: a leader that is gathering ops goes first
         q_cv.wait(lk, [&] { return !gpu_busy && !leader_active; });
-        gpu_busy = true; gpu_owner = std::this_thread::get_id(); gpu_depth = 1;
+        gpu_busy = true; gpu_owner = std::this_thread::get_id(); gpu_depth = depth;
     }
     // Prefill chunk for the next decode: large chunks are the fastest (Thor: 2048 rows run at ~940 tok/s through
     // dequantize + cuBLAS, 512 rows at ~650), but while other streams generate a chunk is also the longest they
@@ -1440,6 +1462,11 @@ struct LlamaCppBackend::Impl {
     uint32_t prefill_chunk_now(uint32_t chunk_sz) {
         std::lock_guard<std::mutex> lk(q_mu);
         return (n_generating > 0) ? std::min<uint32_t>(chunk_sz, 512u) : chunk_sz;
+    }
+    // SIXI_BATCH_WINDOW_US set: use exactly that window (experiments); otherwise it scales with the pass duration
+    static bool batch_window_fixed() noexcept {
+        static const bool fixed = [] { const char* e = std::getenv("SIXI_BATCH_WINDOW_US"); return e != nullptr && *e != '\0'; }();
+        return fixed;
     }
     static std::chrono::microseconds batch_window() noexcept {
         static const long us = [] {
@@ -1471,8 +1498,13 @@ struct LlamaCppBackend::Impl {
         while (!op.done) {
             if (leader_active) { q_cv.wait(lk); continue; }
             leader_active = true;
-            q_cv.wait_for(lk, batch_window(), [&] { return pending.size() >= n_generating; });
-            q_cv.wait(lk, [&] { return !gpu_busy; });
+            // Wait for the other generating streams: one that misses the pass leaves a hole in the sequence ids
+            // (a second weight read, ~85 ms) and then runs a pass of its own. The wait is bounded by a fifth of
+            // the last pass (at least the configured window, at most 40 ms).
+            const auto window = std::max(batch_window(), std::chrono::microseconds(
+                static_cast<long>(std::min(40.0, last_pass_ms * 0.2) * 1000.0)));
+            q_cv.wait_for(lk, batch_window_fixed() ? batch_window() : window, [&] { return pending.size() >= n_generating; });
+            q_cv.wait(lk, [&] { return !gpu_busy && excl_waiting == 0; });
             gpu_busy = true; gpu_owner = std::this_thread::get_id(); gpu_depth = 1;
             // Drafts first: a stream that drafted joins the verify batch a moment later
             bool any_draft = false;
@@ -1483,8 +1515,11 @@ struct LlamaCppBackend::Impl {
                 if ((*it)->kind == kind) { grp.push_back(*it); it = pending.erase(it); } else { ++it; }
             }
             lk.unlock();
+            const auto t_pass = std::chrono::steady_clock::now();
             run_group(grp);
+            const double pass_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_pass).count();
             lk.lock();
+            if (kind == BatchOp::Kind::Verify) last_pass_ms = pass_ms;
             for (BatchOp* o : grp) o->done = true;
             telemetry.batched_passes++;
             telemetry.batched_ops += grp.size();
@@ -1542,6 +1577,7 @@ struct LlamaCppBackend::Impl {
     fn_llama_memory_seq_rm_t llama_memory_seq_rm = nullptr;
     fn_llama_memory_seq_cp_t llama_memory_seq_cp = nullptr;
     fn_llama_n_rs_seq_t llama_n_rs_seq = nullptr;
+    fn_llama_model_memory_size_t llama_model_memory_size = nullptr;   // optional (sixi patch 0005)
     fn_llama_model_n_embd_t llama_model_n_embd = nullptr;
     fn_llama_model_rope_type_t llama_model_rope_type = nullptr;
     fn_llama_model_n_layer_nextn_t llama_model_n_layer_nextn = nullptr;
@@ -1619,6 +1655,15 @@ struct LlamaCppBackend::Impl {
             model_mtp = nullptr;
         }
         for (size_t si = 0; si < streams.size(); ++si) {
+            if (streams[si].dft_sampler_chain != nullptr) {
+                if (ctx_dflash != nullptr && llama_set_sampler != nullptr) {
+                    (void)llama_set_sampler(ctx_dflash, static_cast<int32_t>(si), nullptr);
+                }
+                if (llama_sampler_free != nullptr) {
+                    llama_sampler_free(streams[si].dft_sampler_chain);
+                }
+                streams[si].dft_sampler_chain = nullptr;
+            }
             if (streams[si].ctx_sampler_chain == nullptr) continue;
             if (ctx != nullptr && llama_set_sampler != nullptr) {
                 (void)llama_set_sampler(ctx, static_cast<int32_t>(si), nullptr);
@@ -1646,6 +1691,7 @@ struct LlamaCppBackend::Impl {
         dflash_target_layer_ids = nullptr;
         dflash_target_layer_ids_n = 0;
         dflash_selector_top_k = 0;
+        dflash_gpu_sampler = false;
         dflash_anchor_first = false;
         dflash_has_conf = false;
         dflash_is_v2 = false;
@@ -1968,7 +2014,7 @@ Status LlamaCppBackend::Impl::settle_pads() {
 // after the pass): llama.cpp only keeps sequences in one ubatch when they contribute equally many tokens, and a
 // second ubatch costs a second read of the weights (~85 ms on Thor) while 16 extra rows cost ~25 ms.
 void LlamaCppBackend::Impl::exec_verify_group(std::vector<BatchOp*>& grp) {
-    struct Span { BatchOp* op; size_t off; size_t real; size_t rows; size_t N; };
+    struct Span { BatchOp* op; uint32_t stream; size_t off; size_t real; size_t rows; size_t N; };
     size_t R = 0;
     for (const BatchOp* op : grp) {
         R = std::max(R, op->tokens->size());
@@ -1986,7 +2032,7 @@ void LlamaCppBackend::Impl::exec_verify_group(std::vector<BatchOp*>& grp) {
         const size_t real = op->tokens->size();
         const size_t n_ctx_seq = (opts.n_ctx == 0) ? 4096u : opts.n_ctx;   // as load_model resolves it
         const size_t room = (n_ctx_seq > N) ? (n_ctx_seq - N) : 0u;
-        all.push_back(Span{op, 0, real, std::max(real, std::min(R, room)), N});
+        all.push_back(Span{op, op->stream, 0, real, std::max(real, std::min(R, room)), N});
     }
     // Streams that cannot take the common row count (end of context) run in their own pass
     std::vector<std::vector<Span>> parts;
@@ -2006,7 +2052,7 @@ void LlamaCppBackend::Impl::exec_verify_group(std::vector<BatchOp*>& grp) {
         std::vector<int8_t> flags(total, 0);
         for (size_t si = 0; si < spans.size(); ++si) {
             const Span& sp = spans[si];
-            seq_vals[si] = static_cast<int32_t>(sp.op->stream);
+            seq_vals[si] = static_cast<int32_t>(sp.stream);
             for (size_t j = 0; j < sp.rows; ++j) {
                 tok[sp.off + j] = (j < sp.real) ? (*sp.op->tokens)[j] : sp.op->tokens->back();
                 pos[sp.off + j] = static_cast<int32_t>(sp.N + j);
@@ -2031,7 +2077,7 @@ void LlamaCppBackend::Impl::exec_verify_group(std::vector<BatchOp*>& grp) {
             void* mem = llama_get_memory(ctx);
             for (const Span& sp : spans) {
                 if (mem != nullptr && llama_memory_seq_rm != nullptr) {
-                    (void)llama_memory_seq_rm(mem, static_cast<int32_t>(sp.op->stream), static_cast<int32_t>(sp.N), -1);
+                    (void)llama_memory_seq_rm(mem, static_cast<int32_t>(sp.stream), static_cast<int32_t>(sp.N), -1);
                 }
                 sp.op->st = Status::Error(ErrorCode::BackendError, "llama_decode failed in batched verify with code " + std::to_string(rc));
             }
@@ -2039,12 +2085,16 @@ void LlamaCppBackend::Impl::exec_verify_group(std::vector<BatchOp*>& grp) {
         }
         observe_step_timing(std::chrono::duration<double, std::milli>(t1 - t0).count(), static_cast<int32_t>(total));
         if (trace_prefill()) {
-            std::fprintf(stderr, "sixi-asi: verify batch streams=%zu rows=%zu ms=%.1f\n", spans.size(), total,
+            // llama.cpp keeps sequences in one ubatch only while their ids are consecutive: every run of ids is a
+            // ubatch of its own, i.e. one more read of the weights (85-110 ms on Thor)
+            size_t runs = spans.empty() ? 0u : 1u;
+            for (size_t si = 1; si < spans.size(); ++si) runs += (spans[si].stream != spans[si - 1].stream + 1u) ? 1u : 0u;
+            std::fprintf(stderr, "sixi-asi: verify batch streams=%zu rows=%zu runs=%zu ms=%.1f\n", spans.size(), total, runs,
                          std::chrono::duration<double, std::milli>(t1 - t0).count());
         }
 
         for (const Span& sp : spans) {
-            ActAs act(sp.op->stream);
+            ActAs act(sp.stream);
             auto& st = S();
             st.history_tokens.insert(st.history_tokens.end(), tok.begin() + static_cast<std::ptrdiff_t>(sp.off),
                                      tok.begin() + static_cast<std::ptrdiff_t>(sp.off + sp.real));
@@ -2144,7 +2194,7 @@ void LlamaCppBackend::Impl::exec_verify_group(std::vector<BatchOp*>& grp) {
                 inj.logits = inj_logits.data();
                 if (llama_decode(ctx_dflash, inj) == 0) {
                     for (const Span& sp : spans) {
-                        streams[sp.op->stream].dflash_synced_len = sp.N + sp.real;
+                        streams[sp.stream].dflash_synced_len = sp.N + sp.real;
                     }
                     telemetry.dflash_injected_tokens += static_cast<uint64_t>(total);
                 }
@@ -2263,6 +2313,12 @@ void LlamaCppBackend::Impl::exec_draft_group(std::vector<BatchOp*>& grp) {
             } else {
                 for (size_t i = i_draft_beg; i < n_block && drafted.size() < want; ++i) {
                     if (nextn != nullptr && nextn[(sp.off + i) * stride] < p_min) break;
+                    if (dflash_gpu_sampler) {
+                        const int32_t t = llama_get_sampled_token_ith(ctx_dflash, static_cast<int32_t>(sp.off + i));
+                        if (t < 0 || static_cast<uint64_t>(t) >= dft_vocab) break;
+                        drafted.push_back(t);
+                        continue;
+                    }
                     const float* logits_i = llama_get_logits_ith(ctx_dflash, static_cast<int32_t>(sp.off + i));
                     if (logits_i == nullptr) break;
                     drafted.push_back(DeterministicSampler::sample_greedy_argmax(logits_i, dft_vocab));
@@ -2431,6 +2487,7 @@ Status LlamaCppBackend::load_model(const LoadOptions& opts) {
     (void)resolve(impl_->llama_memory_seq_rm, "llama_memory_seq_rm");
     (void)resolve(impl_->llama_memory_seq_cp, "llama_memory_seq_cp");
     (void)resolve(impl_->llama_n_rs_seq, "llama_n_rs_seq");
+    (void)resolve(impl_->llama_model_memory_size, "llama_model_memory_size");
     (void)resolve(impl_->llama_model_n_embd, "llama_model_n_embd");
     (void)resolve(impl_->llama_model_rope_type, "llama_model_rope_type");
     (void)resolve(impl_->llama_model_n_layer_nextn, "llama_model_n_layer_nextn");
@@ -2515,6 +2572,7 @@ Status LlamaCppBackend::load_model(const LoadOptions& opts) {
     SIXI_CTX_SET(cparams, n_batch, n_batch);
     SIXI_CTX_SET(cparams, n_ubatch, n_ubatch);
     std::vector<LlamaSamplerSeqConfigRaw> ctx_sampler_seq_cfgs;
+    uint32_t ring_depth = 0;   // rollback ring depth requested for the main context
     if (impl_->telemetry.abi_canary_verified) {
         // GPU recurrent-state snapshot ring: O(1) rollback of up to n_rs_seq tokens (bounds the speculative draft k)
         const uint32_t n_rs_seq = (opts.n_rs_seq == 0) ? 8u : opts.n_rs_seq;
@@ -2522,7 +2580,7 @@ Status LlamaCppBackend::load_model(const LoadOptions& opts) {
         const bool seq_api = impl_->llama_memory_seq_cp != nullptr && impl_->llama_memory_seq_rm != nullptr;
         // Parallel streams: sequences 0..n_streams-1 are live, the snapshot slots follow. The chained MTP drafter
         // keeps single-sequence host state, so it is only loaded with one stream.
-        impl_->n_streams = seq_api ? std::clamp<uint32_t>(opts.n_streams, 1u, 16u) : 1u;
+        impl_->n_streams = seq_api ? std::clamp<uint32_t>(opts.n_streams, 1u, 64u) : 1u;
         impl_->streams.assign(impl_->n_streams, Impl::StreamState{});
         const uint32_t n_slots = seq_api ? opts.device_snapshot_slots : 0u;
         if (impl_->n_streams + n_slots > 1u) {
@@ -2533,6 +2591,7 @@ Status LlamaCppBackend::load_model(const LoadOptions& opts) {
             SIXI_CTX_SET(cparams, n_ctx, n_ctx * impl_->n_seq_total);
         }
         SIXI_CTX_SET(cparams, n_rs_seq, n_rs_seq);
+        ring_depth = n_rs_seq;
         // llama.cpp reserves outputs for every sequence: the total must cover n_seq_max * per-sequence outputs
         SIXI_CTX_SET(cparams, n_outputs_max, n_outputs_max * impl_->n_seq_total);
         SIXI_CTX_SET(cparams, n_outputs_max_per_seq, n_outputs_max);
@@ -2589,6 +2648,62 @@ Status LlamaCppBackend::load_model(const LoadOptions& opts) {
         SIXI_CTX_SET(cparams, cb_eval, &Impl::ggml_eval_callback);
         SIXI_CTX_SET(cparams, cb_eval_user_data, impl_.get());
         impl_->telemetry.cb_eval_enabled = true;
+    }
+
+    // Recurrent rollback through a replay log instead of one state snapshot per row (library patch 0007): one
+    // state write per pass and ~0.2 GB instead of ~1.4 GB of recurrent memory per stream; bit-identical output.
+    // The library reads the switch when it creates a context. SIXI_RS_REPLAY=0 keeps the snapshot ring.
+    {
+        const char* e = std::getenv("SIXI_RS_REPLAY");
+        const bool want = (e != nullptr && *e != '\0') ? (std::atoi(e) != 0) : opts.rs_replay_log;
+        if (want) {
+            ::setenv("LLAMA_RS_REPLAY", "1", 0);   // an explicit LLAMA_RS_REPLAY wins
+        } else {
+            ::setenv("LLAMA_RS_REPLAY", "0", 1);
+        }
+    }
+
+    // Unified memory (Thor): the context memory is dominated by the recurrent rollback ring, n_seq * (1 + n_rs_seq)
+    // state rows (151 MB each for Qwen3.8-27B), allocated up front. A ring that does not fit does not fail the
+    // allocation there: the host stalls (2026-11-11, 36 sequences x 17 rows = 92 GB hung the device). Refuse first.
+    // Returns an empty string when the context fits (or cannot be judged), else the reason.
+    auto context_admission = [&](void* model, uint32_t n_seq, uint32_t depth, const char* what) -> std::string {
+        if (impl_->llama_model_memory_size == nullptr || std::getenv("SIXI_ALLOW_MEMORY_OVERCOMMIT") != nullptr) return {};
+        const memory::HardwareResources hw = memory::probe_hardware_resources();
+        const Bytes need = impl_->llama_model_memory_size(model, n_ctx, n_seq, depth);
+        if (!hw.is_unified_memory || need == 0 || hw.host_ram_available_bytes == 0) return {};
+        auto reserve_for = [](Bytes n) { return std::max<Bytes>(8ULL * units::GiB, n / 8ULL); };
+        const Bytes avail = hw.host_ram_available_bytes;
+        auto fmt = [](Bytes b) {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "%.1f GB (%.1f GiB)", static_cast<double>(b) / 1e9, units::to_gib(b));
+            return std::string(buf);
+        };
+        if (need + reserve_for(need) <= avail) {
+            std::fprintf(stderr, "sixi-asi: %s context memory %s for %u sequences, ring depth %u; available %s\n",
+                         what, fmt(need).c_str(), n_seq, depth, fmt(avail).c_str());
+            return {};
+        }
+        std::string msg = std::string(what) + " context memory " + fmt(need) + " for " + std::to_string(n_seq) +
+            " sequences with a " + std::to_string(depth) + "-deep rollback ring plus a host reserve of " +
+            fmt(reserve_for(need)) + " exceeds the available " + fmt(avail);
+        int64_t fit = -1;
+        if (depth > 0) {
+            const Bytes base = impl_->llama_model_memory_size(model, n_ctx, n_seq, 0u);
+            const Bytes per_depth = (need > base) ? (need - base) / depth : 0;
+            for (int64_t d = static_cast<int64_t>(depth) - 1; d >= 0 && fit < 0 && per_depth > 0; --d) {
+                const Bytes n = base + per_depth * static_cast<uint64_t>(d);
+                if (n + reserve_for(n) <= avail) fit = d;
+            }
+        }
+        msg += (fit > 0) ? "; a ring depth of " + std::to_string(fit) + " fits (--n-rs-seq), or use fewer streams"
+                         : "; use fewer streams or a shorter context";
+        return msg;
+    };
+    if (const std::string why = context_admission(impl_->model, impl_->n_seq_total, ring_depth, "target"); !why.empty()) {
+        impl_->llama_model_free(impl_->model);
+        impl_->model = nullptr;
+        return Status::Error(ErrorCode::OutOfMemoryRAM, why);
     }
 
     impl_->ctx = impl_->llama_init_from_model(impl_->model, cparams);
@@ -2744,6 +2859,42 @@ Status LlamaCppBackend::load_model(const LoadOptions& opts) {
                 SIXI_CTX_SET(cparams_dft, n_threads_batch, n_threads);
                 SIXI_CTX_SET(cparams_dft, ctx_other, impl_->ctx);
 
+                if (const std::string why = context_admission(impl_->model_dflash, impl_->n_seq_total, 0u, "drafter"); !why.empty()) {
+                    impl_->cleanup();
+                    return Status::Error(ErrorCode::OutOfMemoryRAM, why);
+                }
+                // greedy chain per live sequence, as for the target (SIXI_DRAFT_GPU_SAMPLER=0 keeps the host argmax)
+                std::vector<LlamaSamplerSeqConfigRaw> dft_sampler_cfgs;
+                {
+                    const char* e = std::getenv("SIXI_DRAFT_GPU_SAMPLER");
+                    const bool want = !(e != nullptr && *e == '0');
+                    if (want && opts.enable_gpu_greedy_sampler && impl_->telemetry.abi_canary_verified &&
+                        impl_->llama_sampler_chain_default_params != nullptr && impl_->llama_sampler_chain_init != nullptr &&
+                        impl_->llama_sampler_chain_add != nullptr && impl_->llama_sampler_init_greedy != nullptr &&
+                        impl_->llama_get_sampled_token_ith != nullptr) {
+                        for (uint32_t si = 0; si < impl_->n_streams; ++si) {
+                            void* chain = impl_->llama_sampler_chain_init(impl_->llama_sampler_chain_default_params());
+                            void* greedy = impl_->llama_sampler_init_greedy();
+                            if (chain != nullptr && greedy != nullptr) {
+                                impl_->llama_sampler_chain_add(chain, greedy);
+                                impl_->streams[si].dft_sampler_chain = chain;
+                                dft_sampler_cfgs.push_back(LlamaSamplerSeqConfigRaw{static_cast<int32_t>(si), chain});
+                            } else if (chain != nullptr && impl_->llama_sampler_free != nullptr) {
+                                impl_->llama_sampler_free(chain);
+                            }
+                        }
+                        if (dft_sampler_cfgs.size() == impl_->n_streams) {
+                            SIXI_CTX_SET(cparams_dft, samplers, dft_sampler_cfgs.data());
+                            SIXI_CTX_SET(cparams_dft, n_samplers, static_cast<uint32_t>(dft_sampler_cfgs.size()));
+                            impl_->dflash_gpu_sampler = true;
+                        } else {
+                            for (auto& st : impl_->streams) {
+                                if (st.dft_sampler_chain != nullptr && impl_->llama_sampler_free != nullptr) impl_->llama_sampler_free(st.dft_sampler_chain);
+                                st.dft_sampler_chain = nullptr;
+                            }
+                        }
+                    }
+                }
                 impl_->ctx_dflash = impl_->llama_init_from_model(impl_->model_dflash, cparams_dft);
                 if (impl_->ctx_dflash != nullptr) {
                     impl_->dflash_target_layer_ids = ids;
@@ -3786,6 +3937,14 @@ std::vector<int32_t> LlamaCppBackend::stream_context_tokens(uint32_t stream) con
     return impl_->streams[stream].history_tokens;
 }
 
+void LlamaCppBackend::begin_setup() noexcept {
+    if (impl_ && impl_->n_streams > 1) impl_->gpu_acquire();
+}
+
+void LlamaCppBackend::end_setup() noexcept {
+    if (impl_ && impl_->n_streams > 1) impl_->gpu_release();
+}
+
 void LlamaCppBackend::begin_generation() noexcept {
     if (!impl_) return;
     std::lock_guard<std::mutex> lk(impl_->q_mu);
@@ -3831,6 +3990,18 @@ uint32_t LlamaCppBackend::shared_draft_k() const noexcept {
     // 8-row tile, while most accepted tokens come from the first drafts. About 6 rows per stream, rounded up to
     // fill the last tile, was the best aggregate: 2 streams k=7 (63.7 tok/s; k=15 55.4), 4 streams k=5 (94.1;
     // k=7 91.4, k=15 69.8).
+    // From 8 streams on the pass is compute bound per row (1.7-2.4 ms): 3 drafts per stream were best at 8 / 16 / 32
+    // streams (113.5 / 128.8 / 129.4 tok/s aggregate, against 105.4 / 117.4 / 115.6 with 5 and 125.0 at 16 with 2).
+    if (n >= 8) {
+        // With a kept BF16 copy of the large weight matrices (--wide-copy-gb, library patch 0008) a pass of ~192
+        // rows costs little more than one of 128: 32 streams made 182-184 tok/s with 5 drafts against 173-176
+        // with 3. Longer drafts lose everywhere else (16 streams: 147 with 7, 113 with 11; 24 streams: 136 with 7).
+        static const bool wide_copy = [] {
+            const char* e = std::getenv("GGML_CUDA_WEIGHT_CACHE_GB");
+            return e != nullptr && std::atof(e) > 0.0;
+        }();
+        return (wide_copy && n >= 28) ? 5u : 3u;
+    }
     const uint32_t total_rows = 8u * ((6u * n + 7u) / 8u);
     return std::max(3u, total_rows / n - 1u);
 }
@@ -4044,6 +4215,14 @@ Result<std::vector<int32_t>> LlamaCppBackend::draft_embedded_mtp(int32_t first_t
             for (int32_t i = i_draft_beg; i < n_block_tokens; ++i) {
                 if (conf != nullptr && conf[static_cast<size_t>(i) * impl_->n_embd_dflash_dec] < p_min) {
                     break;
+                }
+                if (impl_->dflash_gpu_sampler) {
+                    const int32_t t = impl_->llama_get_sampled_token_ith(impl_->ctx_dflash, i);
+                    if (t < 0 || static_cast<uint64_t>(t) >= dft_vocab) {
+                        break;
+                    }
+                    drafted.push_back(t);
+                    continue;
                 }
                 const float* logits_i = impl_->llama_get_logits_ith(impl_->ctx_dflash, i);
                 if (logits_i == nullptr) {

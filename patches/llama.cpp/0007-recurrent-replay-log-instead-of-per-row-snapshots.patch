@@ -1,0 +1,1110 @@
+diff --git a/ggml/include/ggml.h b/ggml/include/ggml.h
+index 973aea25b..1a11d978e 100644
+--- a/ggml/include/ggml.h
++++ b/ggml/include/ggml.h
+@@ -2702,6 +2702,15 @@ extern "C" {
+             struct ggml_tensor  * state,
+             int64_t               K);
+ 
++    // with K == 1: the single snapshot becomes the state n_back tokens before the end of the batch instead of the
++    // final state (n_back == n_tokens: the input state). A caller can then keep a base state and replay the rows
++    // after it in the next batch instead of storing one snapshot per row.
++    GGML_API void ggml_gated_delta_net_set_snap_back(struct ggml_tensor * gdn, int32_t n_back);
++
++    // the first n_replay tokens only rebuild the state (rows replayed from a log): a backend may leave their
++    // attention scores unwritten and skip a row whose beta and scalar gate are both 0 (it leaves the state as is)
++    GGML_API void ggml_gated_delta_net_set_n_replay(struct ggml_tensor * gdn, int32_t n_replay);
++
+     // DSA lightning indexer
+     //
+     // q:       [n_embd_idx, n_head_idx, n_batch, ne3 ]
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+index 40e93ccab..0b3184d9f 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -3051,7 +3051,8 @@ struct ggml_cplan ggml_graph_plan(
+                     {
+                         const int64_t S_v = node->src[2]->ne[0];
+                         const int64_t K   = ggml_get_op_params_i32(node, 0);
+-                        const int64_t per_thread = S_v + (K > 1 ? S_v * S_v : 0);
++                        const bool    work = K > 1 || ggml_get_op_params_i32(node, 1) > 0; // see snap_back
++                        const int64_t per_thread = S_v + (work ? S_v * S_v : 0);
+                         cur = per_thread * sizeof(float) * n_tasks;
+                     } break;
+                 case GGML_OP_COUNT:
+diff --git a/ggml/src/ggml-cpu/ops.cpp b/ggml/src/ggml-cpu/ops.cpp
+index 1884600e6..31e092249 100644
+--- a/ggml/src/ggml-cpu/ops.cpp
++++ b/ggml/src/ggml-cpu/ops.cpp
+@@ -11160,11 +11160,15 @@ static void ggml_compute_forward_gated_delta_net_one_chunk(
+     // per-seq stride in floats (seq s starts at state + s * seq_stride)
+     const int64_t state_seq_stride = src_state->nb[3] / sizeof(float);
+ 
+-    const int64_t per_thread = S_v + (K > 1 ? S_v * S_v : 0);
++    // K == 1 with snap_back > 0: the single slot holds the state snap_back tokens before the end
++    const int64_t snap_back = K == 1 ? ggml_get_op_params_i32(dst, 1) : 0;
++    const bool    use_work  = K > 1 || snap_back > 0;
++
++    const int64_t per_thread = S_v + (use_work ? S_v * S_v : 0);
+     const int ith = params->ith;
+ 
+     float * delta       = (float *)params->wdata + ith * per_thread + CACHE_LINE_SIZE_F32;
+-    float * state_work  = K > 1 ? (delta + S_v) : nullptr;
++    float * state_work  = use_work ? (delta + S_v) : nullptr;
+ 
+     // output layout: [attn_scores | new_states]
+     // attn_scores: S_v * H * n_tokens * n_seqs    floats
+@@ -11198,7 +11202,7 @@ static void ggml_compute_forward_gated_delta_net_one_chunk(
+ 
+         // For K=1, write directly to the single output slot to avoid an extra memcpy at the end.
+         // For K>1, work in scratch and copy out per-token when the slot is in range.
+-        float * s_out = (K > 1)
++        float * s_out = use_work
+             ? state_work
+             : state_out_base + (iv3 * H + iv1) * S_v * S_v;
+ 
+@@ -11206,6 +11210,10 @@ static void ggml_compute_forward_gated_delta_net_one_chunk(
+         // state layout [S_v, S_v, H, n_seqs]: seq iv3 starts at iv3 * state_seq_stride.
+         const float * s_in = state_in_base + iv3 * state_seq_stride + iv1 * S_v * S_v;
+         memcpy(s_out, s_in, S_v * S_v * sizeof(float));
++        if (snap_back > 0 && snap_back >= n_tokens) {
++            // the snapshot is the input state
++            memcpy(state_out_base + (iv3 * H + iv1) * S_v * S_v, s_out, S_v * S_v * sizeof(float));
++        }
+ 
+         // attn output pointer for first token of this (head, seq)
+         float * attn_data = attn_out_base + (iv3 * n_tokens * H + iv1) * S_v;
+@@ -11262,6 +11270,8 @@ static void ggml_compute_forward_gated_delta_net_one_chunk(
+                                      (iv3 * H + iv1) * S_v * S_v;
+                     memcpy(curr_state_o, s_out, S_v * S_v * sizeof(float));
+                 }
++            } else if (snap_back > 0 && n_tokens - 1 - t == snap_back) {
++                memcpy(state_out_base + (iv3 * H + iv1) * S_v * S_v, s_out, S_v * S_v * sizeof(float));
+             }
+         }
+     }
+diff --git a/ggml/src/ggml-cuda/gated_delta_net.cu b/ggml/src/ggml-cuda/gated_delta_net.cu
+index d731af114..0aa0653d3 100644
+--- a/ggml/src/ggml-cuda/gated_delta_net.cu
++++ b/ggml/src/ggml-cuda/gated_delta_net.cu
+@@ -33,6 +33,8 @@ gated_delta_net_cuda(const float * q,
+                                      float         scale,
+                                      int64_t       state_slot_stride,
+                                      int           K,
++                                     int           snap_only,
++                                     int           n_replay,
+                                      const float *   inplace_rows,
+                                      const int32_t * inplace_ids,
+                                      int64_t         inplace_mem_size,
+@@ -86,6 +88,17 @@ gated_delta_net_cuda(const float * q,
+         s_shard[r]  = curr_state[i];
+     }
+ 
++    if constexpr (keep_rs_t) {
++        // single snapshot that is the input state (snap_back == n_tokens)
++        if (snap_only >= 0 && snap_only >= (int) n_tokens) {
++#pragma unroll
++            for (int r = 0; r < rows_per_lane; r++) {
++                const int i = r * lanes_per_col + lane_in_col;
++                state[col * S_v + i] = s_shard[r];
++            }
++        }
++    }
++
+     for (int t = 0; t < n_tokens; t++) {
+         const float * q_t = q + iq3 * sq3 + t * sq2 + iq1 * sq1;
+         const float * k_t = k + iq3 * sq3 + t * sq2 + iq1 * sq1;
+@@ -108,32 +121,43 @@ gated_delta_net_cuda(const float * q,
+         }
+ 
+         if constexpr (!KDA) {
+-            const float g_val = expf(*g_t);
++            // a replayed row with beta == 0 and gate == 0 is a row of the log that was rolled back: no change
++            if (!(t < n_replay && beta_val == 0.0f && *g_t == 0.0f)) {
++                const float g_val = expf(*g_t);
+ 
+-            // kv[col] = (S^T @ k)[col] = sum_i S[i][col] * k[i]
+-            float kv_shard = 0.0f;
++                // kv[col] = (S^T @ k)[col] = sum_i S[i][col] * k[i]
++                float kv_shard = 0.0f;
+ #pragma unroll
+-            for (int r = 0; r < rows_per_lane; r++) {
+-                kv_shard += s_shard[r] * k_reg[r];
+-            }
+-            float kv_col = warp_reduce_sum<lanes_per_col>(kv_shard);
++                for (int r = 0; r < rows_per_lane; r++) {
++                    kv_shard += s_shard[r] * k_reg[r];
++                }
++                float kv_col = warp_reduce_sum<lanes_per_col>(kv_shard);
+ 
+-            // delta[col] = (v[col] - g * kv[col]) * beta
+-            float delta_col = (v_t[col] - g_val * kv_col) * beta_val;
++                // delta[col] = (v[col] - g * kv[col]) * beta
++                float delta_col = (v_t[col] - g_val * kv_col) * beta_val;
+ 
+-            // fused: S[i][col] = g * S[i][col] + k[i] * delta[col]
+-            // attn[col] = (S^T @ q)[col] = sum_i S[i][col] * q[i]
+-            float attn_partial = 0.0f;
++                if (t < n_replay) {
++                    // replayed row: the state only
+ #pragma unroll
+-            for (int r = 0; r < rows_per_lane; r++) {
+-                s_shard[r]  = g_val * s_shard[r] + k_reg[r] * delta_col;
+-                attn_partial += s_shard[r] * q_reg[r];
+-            }
++                    for (int r = 0; r < rows_per_lane; r++) {
++                        s_shard[r]  = g_val * s_shard[r] + k_reg[r] * delta_col;
++                    }
++                } else {
++                    // fused: S[i][col] = g * S[i][col] + k[i] * delta[col]
++                    // attn[col] = (S^T @ q)[col] = sum_i S[i][col] * q[i]
++                    float attn_partial = 0.0f;
++#pragma unroll
++                    for (int r = 0; r < rows_per_lane; r++) {
++                        s_shard[r]  = g_val * s_shard[r] + k_reg[r] * delta_col;
++                        attn_partial += s_shard[r] * q_reg[r];
++                    }
+ 
+-            float attn_col = warp_reduce_sum<lanes_per_col>(attn_partial);
++                    float attn_col = warp_reduce_sum<lanes_per_col>(attn_partial);
+ 
+-            if (lane_in_col == 0) {
+-                attn_data[col] = attn_col * scale;
++                    if (lane_in_col == 0) {
++                        attn_data[col] = attn_col * scale;
++                    }
++                }
+             }
+         } else {
+             // kv[col] = sum_i g[i] * S[i][col] * k[i]
+@@ -172,8 +196,9 @@ gated_delta_net_cuda(const float * q,
+             // snapshot slot mapping: slot 0 = most recent state, slot s = s tokens back.
+             // When n_tokens < K only slots 0..n_tokens-1 are written; older slots are caller-owned.
+             const int target_slot = (int) n_tokens - 1 - t;
+-            if (target_slot >= 0 && target_slot < K) {
+-                float * curr_state = state + target_slot * state_slot_stride;
++            // snap_only >= 0: one snapshot only (the state snap_only tokens back), written to slot 0
++            if (target_slot >= 0 && target_slot < K && (snap_only < 0 || target_slot == snap_only)) {
++                float * curr_state = state + (snap_only < 0 ? target_slot * state_slot_stride : 0);
+ #pragma unroll
+                 for (int r = 0; r < rows_per_lane; r++) {
+                     const int i = r * lanes_per_col + lane_in_col;
+@@ -202,7 +227,7 @@ static void launch_gated_delta_net(
+         int64_t sv1,   int64_t sv2, int64_t sv3,
+         int64_t sb1,   int64_t sb2, int64_t sb3,
+         int64_t neqk1, int64_t rq3,
+-        float scale, int64_t state_slot_stride, int K, const ggml_cuda_gdn_inplace_state * inplace, cudaStream_t stream) {
++        float scale, int64_t state_slot_stride, int K, int snap_only, int n_replay, const ggml_cuda_gdn_inplace_state * inplace, cudaStream_t stream) {
+     const float *   ip_rows = inplace != nullptr ? inplace->rows : nullptr;
+     const int32_t * ip_ids  = inplace != nullptr ? inplace->ids : nullptr;
+     const int64_t   ip_mem  = inplace != nullptr ? inplace->mem_size : 0;
+@@ -230,21 +255,21 @@ static void launch_gated_delta_net(
+             ggml_cuda_kernel_launch(gated_delta_net_cuda<16, KDA, keep_rs_t>, launch_params,
+                 q_d, k_d, v_d, g_d, b_d, s_d, dst_d, state_d, H,
+                 n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
+-                sb1, sb2, sb3, neqk1_magic, rq3_magic, scale, state_slot_stride, K,
++                sb1, sb2, sb3, neqk1_magic, rq3_magic, scale, state_slot_stride, K, snap_only, n_replay,
+                 ip_rows, ip_ids, ip_mem, ip_head);
+             break;
+         case 32:
+             ggml_cuda_kernel_launch(gated_delta_net_cuda<32, KDA, keep_rs_t>, launch_params,
+                 q_d, k_d, v_d, g_d, b_d, s_d, dst_d, state_d, H,
+                 n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
+-                sb1, sb2, sb3, neqk1_magic, rq3_magic, scale, state_slot_stride, K,
++                sb1, sb2, sb3, neqk1_magic, rq3_magic, scale, state_slot_stride, K, snap_only, n_replay,
+                 ip_rows, ip_ids, ip_mem, ip_head);
+             break;
+         case 64: {
+             ggml_cuda_kernel_launch(gated_delta_net_cuda<64, KDA, keep_rs_t>, launch_params,
+                 q_d, k_d, v_d, g_d, b_d, s_d, dst_d, state_d, H,
+                 n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
+-                sb1, sb2, sb3, neqk1_magic, rq3_magic, scale, state_slot_stride, K,
++                sb1, sb2, sb3, neqk1_magic, rq3_magic, scale, state_slot_stride, K, snap_only, n_replay,
+                 ip_rows, ip_ids, ip_mem, ip_head);
+             break;
+         }
+@@ -252,7 +277,7 @@ static void launch_gated_delta_net(
+             ggml_cuda_kernel_launch(gated_delta_net_cuda<128, KDA, keep_rs_t>, launch_params,
+                 q_d, k_d, v_d, g_d, b_d, s_d, dst_d, state_d, H,
+                 n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
+-                sb1, sb2, sb3, neqk1_magic, rq3_magic, scale, state_slot_stride, K,
++                sb1, sb2, sb3, neqk1_magic, rq3_magic, scale, state_slot_stride, K, snap_only, n_replay,
+                 ip_rows, ip_ids, ip_mem, ip_head);
+             break;
+         }
+@@ -365,7 +390,13 @@ static void ggml_cuda_op_gated_delta_net_impl(
+ 
+     // K (snapshot slot count) is an op param; state holds s0 only [S_v, S_v, H, n_seqs].
+     const int K = ggml_get_op_params_i32(dst, 0);
+-    const bool keep_rs = K > 1;
++    // K == 1 with snap_back > 0: a single snapshot, the state snap_back tokens before the end. Runs the snapshot
++    // kernel restricted to that slot.
++    const int snap_back = K == 1 ? ggml_get_op_params_i32(dst, 1) : 0;
++    const int snap_only = snap_back > 0 ? snap_back : -1;
++    const int n_replay  = ggml_get_op_params_i32(dst, 2); // leading rows that only rebuild the state
++    const int K_kernel  = snap_back > 0 ? snap_back + 1 : K;
++    const bool keep_rs = K > 1 || snap_back > 0;
+ 
+     // recurrent state -> gdn_out tail (after attention scores), or the cache when fusing
+     float * state_d           = dst_d + S_v * H * n_tokens * n_seqs;
+@@ -384,7 +415,7 @@ static void ggml_cuda_op_gated_delta_net_impl(
+         }
+     }
+ 
+-    if (inplace == nullptr) {
++    if (inplace == nullptr && snap_back == 0 && n_replay == 0) {
+         ggml_cuda_gdn_mma_args args = ggml_cuda_gdn_mma_args_from_tensor(dst);
+         args.state_out = state_d;
+         if (ggml_cuda_gdn_mma_launch(ctx.device, args, stream)) {
+@@ -395,21 +426,21 @@ static void ggml_cuda_op_gated_delta_net_impl(
+         if (keep_rs) {
+             launch_gated_delta_net<true, true>(q_d, k_d, v_d, g_d, b_d, s_d, dst_d, state_d,
+                 S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
+-                sb1, sb2, sb3, neqk1, rq3, scale, state_slot_stride, K, inplace, stream);
++                sb1, sb2, sb3, neqk1, rq3, scale, state_slot_stride, K_kernel, snap_only, n_replay, inplace, stream);
+         } else {
+             launch_gated_delta_net<true, false>(q_d, k_d, v_d, g_d, b_d, s_d, dst_d, state_d,
+                 S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
+-                sb1, sb2, sb3, neqk1, rq3, scale, state_slot_stride, K, inplace, stream);
++                sb1, sb2, sb3, neqk1, rq3, scale, state_slot_stride, K_kernel, snap_only, n_replay, inplace, stream);
+         }
+     } else {
+         if (keep_rs) {
+             launch_gated_delta_net<false, true>(q_d, k_d, v_d, g_d, b_d, s_d, dst_d, state_d,
+                 S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
+-                sb1, sb2, sb3, neqk1, rq3, scale, state_slot_stride, K, inplace, stream);
++                sb1, sb2, sb3, neqk1, rq3, scale, state_slot_stride, K_kernel, snap_only, n_replay, inplace, stream);
+         } else {
+             launch_gated_delta_net<false, false>(q_d, k_d, v_d, g_d, b_d, s_d, dst_d, state_d,
+                 S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
+-                sb1, sb2, sb3, neqk1, rq3, scale, state_slot_stride, K, inplace, stream);
++                sb1, sb2, sb3, neqk1, rq3, scale, state_slot_stride, K_kernel, snap_only, n_replay, inplace, stream);
+         }
+     }
+ }
+diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
+index f8cf75b3a..6f08675fd 100644
+--- a/ggml/src/ggml.c
++++ b/ggml/src/ggml.c
+@@ -6533,6 +6533,19 @@ struct ggml_tensor * ggml_gated_delta_net(
+     return result;
+ }
+ 
++void ggml_gated_delta_net_set_snap_back(struct ggml_tensor * gdn, int32_t n_back) {
++    GGML_ASSERT(gdn->op == GGML_OP_GATED_DELTA_NET);
++    GGML_ASSERT(ggml_get_op_params_i32(gdn, 0) == 1);
++    GGML_ASSERT(n_back >= 0 && n_back <= gdn->src[2]->ne[2]);
++    ggml_set_op_params_i32(gdn, 1, n_back);
++}
++
++void ggml_gated_delta_net_set_n_replay(struct ggml_tensor * gdn, int32_t n_replay) {
++    GGML_ASSERT(gdn->op == GGML_OP_GATED_DELTA_NET);
++    GGML_ASSERT(n_replay >= 0 && n_replay <= gdn->src[2]->ne[2]);
++    ggml_set_op_params_i32(gdn, 2, n_replay);
++}
++
+ // ggml_lightning_indexer
+ 
+ struct ggml_tensor * ggml_lightning_indexer(
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index b5d4642a2..d2d632403 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -483,6 +483,32 @@ void llm_graph_input_cls::set_input(const llama_ubatch * ubatch) {
+     }
+ }
+ 
++// replay log inputs (cell ids and the mask of the replayed rows); shared with the hybrid memory inputs
++static void llm_graph_input_rs_set_replay(const llm_graph_input_rs * inp, const llama_memory_recurrent_context * mctx) {
++    const int64_t n_rs = mctx->get_n_rs();
++
++    if (inp->s_copy_cell) {
++        GGML_ASSERT(ggml_backend_buffer_is_host(inp->s_copy_cell->buffer));
++        int32_t * data = (int32_t *) inp->s_copy_cell->data;
++        for (uint32_t i = 0; i < n_rs; ++i) {
++            data[i] = mctx->s_copy_cell(i);
++        }
++    }
++
++    if (inp->rs_mask) {
++        GGML_ASSERT(ggml_backend_buffer_is_host(inp->rs_mask->buffer));
++        float * data = (float *) inp->rs_mask->data;
++        const int64_t n_rows = inp->rs_mask->ne[2];
++        const int64_t n_seqs = inp->rs_mask->ne[3];
++        for (int64_t s = 0; s < n_seqs; ++s) {
++            const int64_t n_keep = mctx->rs_keep(s);
++            for (int64_t t = 0; t < n_rows; ++t) {
++                data[s*n_rows + t] = t < n_keep ? 1.0f : 0.0f;
++            }
++        }
++    }
++}
++
+ void llm_graph_input_rs::set_input(const llama_ubatch * ubatch) {
+     GGML_UNUSED(ubatch);
+ 
+@@ -497,6 +523,8 @@ void llm_graph_input_rs::set_input(const llama_ubatch * ubatch) {
+             data[i] = mctx->s_copy(i);
+         }
+     }
++
++    llm_graph_input_rs_set_replay(this, mctx);
+ }
+ 
+ bool llm_graph_input_rs::can_reuse(const llm_graph_params & params) {
+@@ -510,6 +538,8 @@ bool llm_graph_input_rs::can_reuse(const llm_graph_params & params) {
+ 
+     res &= s_copy_main->ne[0] == params.ubatch.n_seqs;
+ 
++    res &= rs_replay_len == mctx->get_rs_replay_len();
++
+     res &= head == mctx->get_head();
+     res &= rs_z == mctx->get_rs_z();
+ 
+@@ -1211,6 +1241,8 @@ void llm_graph_input_mem_hybrid::set_input(const llama_ubatch * ubatch) {
+             data[i] = mctx->get_recr()->s_copy(i);
+         }
+     }
++
++    llm_graph_input_rs_set_replay(inp_rs.get(), mctx->get_recr());
+ }
+ 
+ bool llm_graph_input_mem_hybrid::can_reuse(const llm_graph_params & params) {
+@@ -1226,6 +1258,7 @@ bool llm_graph_input_mem_hybrid::can_reuse(const llm_graph_params & params) {
+     res &= can_reuse_attn_mask(inp_attn->self_attn_mask, mctx->get_attn(), params.ubatch, params.cparams);
+ 
+     res &= inp_rs->s_copy->ne[0] == mctx->get_recr()->get_n_rs();
++    res &= inp_rs->rs_replay_len == mctx->get_recr()->get_rs_replay_len();
+ 
+     res &= inp_rs->s_copy_main->ne[0] == params.ubatch.n_seqs;
+ 
+@@ -1257,6 +1290,8 @@ void llm_graph_input_mem_hybrid_k::set_input(const llama_ubatch * ubatch) {
+             data[i] = mctx->get_recr()->s_copy(i);
+         }
+     }
++
++    llm_graph_input_rs_set_replay(inp_rs.get(), mctx->get_recr());
+ }
+ 
+ bool llm_graph_input_mem_hybrid_k::can_reuse(const llm_graph_params & params) {
+@@ -1271,6 +1306,7 @@ bool llm_graph_input_mem_hybrid_k::can_reuse(const llm_graph_params & params) {
+     res &= can_reuse_attn_mask(inp_attn->self_attn_mask, mctx->get_attn(), params.ubatch, params.cparams);
+ 
+     res &= inp_rs->s_copy->ne[0] == mctx->get_recr()->get_n_rs();
++    res &= inp_rs->rs_replay_len == mctx->get_recr()->get_rs_replay_len();
+ 
+     res &= inp_rs->s_copy_main->ne[0] == params.ubatch.n_seqs;
+ 
+@@ -1314,6 +1350,8 @@ void llm_graph_input_mem_hybrid_iswa::set_input(const llama_ubatch * ubatch) {
+             data[i] = mctx->get_recr()->s_copy(i);
+         }
+     }
++
++    llm_graph_input_rs_set_replay(inp_rs.get(), mctx->get_recr());
+ }
+ 
+ bool llm_graph_input_mem_hybrid_iswa::can_reuse(const llm_graph_params & params) {
+@@ -1342,6 +1380,7 @@ bool llm_graph_input_mem_hybrid_iswa::can_reuse(const llm_graph_params & params)
+     res &= can_reuse_attn_mask(inp_attn->self_attn_mask_swa, attn_ctx->get_swa(), params.ubatch, params.cparams);
+ 
+     res &= inp_rs->s_copy->ne[0] == mctx->get_recr()->get_n_rs();
++    res &= inp_rs->rs_replay_len == mctx->get_recr()->get_rs_replay_len();
+ 
+     res &= inp_rs->s_copy_main->ne[0] == params.ubatch.n_seqs;
+ 
+@@ -4034,6 +4073,20 @@ static std::unique_ptr<llm_graph_input_rs> build_rs_inp_impl(
+     inp->s_copy_main = ggml_view_1d(ctx0, inp->s_copy, n_seqs, 0);
+     inp->s_copy_tail = ggml_view_1d(ctx0, inp->s_copy, n_rs - 1, inp->s_copy->nb[0]);
+ 
++    if (mctx_cur->rs_replay()) {
++        inp->s_copy_cell = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_rs);
++        ggml_set_input(inp->s_copy_cell);
++        ggml_set_name(inp->s_copy_cell, "rs_s_copy_cell");
++        inp->s_copy_cell_main = ggml_view_1d(ctx0, inp->s_copy_cell, n_seqs, 0);
++
++        inp->rs_replay_len = mctx_cur->get_rs_replay_len();
++        if (inp->rs_replay_len > 0) {
++            inp->rs_mask = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, 1, 1, inp->rs_replay_len, n_seqs);
++            ggml_set_input(inp->rs_mask);
++            ggml_set_name(inp->rs_mask, "rs_replay_mask");
++        }
++    }
++
+     inp->head = mctx_cur->get_head();
+     inp->rs_z = mctx_cur->get_rs_z();
+ 
+@@ -4058,9 +4111,18 @@ ggml_tensor * llm_graph_context::build_rs(
+ 
+     // a custom getter reads the states of the ubatch straight from the cache, so the gather skips the first
+     // state: it still holds the n_rs - n_seqs extra states and copies no state of a single sequence ubatch
+-    ggml_tensor * state_copy = get_state_rows ? inp->s_copy_tail : inp->s_copy;
++    ggml_tensor * state_copy      = get_state_rows ? inp->s_copy_tail : inp->s_copy;
++    ggml_tensor * state_copy_main = inp->s_copy_main;
++
++    // replay log: a tensor with one row per cell (the state and the log) is indexed by cell; the conv state keeps
++    // its rollback slots and the slot-coded ids
++    if (inp->s_copy_cell != nullptr && s->ne[1] == (int64_t) kv_state->get_size()) {
++        GGML_ASSERT(!get_state_rows);
++        state_copy      = inp->s_copy_cell;
++        state_copy_main = inp->s_copy_cell_main;
++    }
+ 
+-    return build_rs(s, state_copy, inp->s_copy_main, state_size, n_seqs,
++    return build_rs(s, state_copy, state_copy_main, state_size, n_seqs,
+                     kv_state->get_n_rs(), kv_state->get_head(), kv_state->get_size(), kv_state->get_rs_z(),
+                     get_state_rows);
+ }
+@@ -4098,8 +4160,10 @@ void llm_graph_context::build_conv_state_store(
+     // this logic assumes that the last (n_rs_seq + 1) tokens of a sequence in a batch are inside
+     //   the same ubatch, which `split_equal()` guarantees via its n_keep_tail argument
+     // a rollback of k tokens reads slot k, and the memory allows k < n only (see rs_max), so slots from n on are left unwritten
++    // (replay log: the state update can drop every row of the ubatch, so slot n, the state before the ubatch, is
++    //  written as well: its window starts at column 0)
+     const int64_t K  = (int64_t) cparams.n_rs_seq + 1;
+-    const int64_t Kw = std::min(n, K);
++    const int64_t Kw = std::min(mctx_cur->rs_replay() ? n + 1 : n, K);
+ 
+     // each conv layer builds its own slot order {K-1, ..., 0}, on the device of the layer, and takes its tail
+     // {Kw-1, ..., 0}; the size K never depends on the ubatch, so the reserved graph covers them all
+diff --git a/src/llama-graph.h b/src/llama-graph.h
+index 9867c9540..4e3cb2445 100644
+--- a/src/llama-graph.h
++++ b/src/llama-graph.h
+@@ -310,6 +310,13 @@ public:
+     ggml_tensor * s_copy_main; // I32 [n_seqs]
+     ggml_tensor * s_copy_tail; // I32 [n_rs - 1]
+ 
++    // replay log (see llama_memory_recurrent::rs_replay): source cells without rollback slot, and the rows of
++    // each sequence's log that are replayed (1) or skipped (0)
++    ggml_tensor * s_copy_cell      = nullptr; // I32 [n_rs]
++    ggml_tensor * s_copy_cell_main = nullptr; // I32 [n_seqs]
++    ggml_tensor * rs_mask          = nullptr; // F32 [1, 1, rs_replay_len, n_seqs]
++    uint32_t      rs_replay_len    = 0;
++
+     const llama_memory_recurrent_context * mctx;
+ 
+     // used in view offsets, need to match for valid graph reuse
+diff --git a/src/llama-memory-recurrent.cpp b/src/llama-memory-recurrent.cpp
+index 9213ac1dc..241322f40 100644
+--- a/src/llama-memory-recurrent.cpp
++++ b/src/llama-memory-recurrent.cpp
+@@ -36,6 +36,20 @@ llama_memory_recurrent::llama_memory_recurrent(
+     this->n_rs_seq = n_rs_seq;
+     rs_idx.assign(n_seq_max, 0);
+ 
++    {
++        // replay log instead of per-row snapshots: the graph side lives in llm_build_delta_net_base
++        const char * env     = getenv("LLAMA_RS_REPLAY");
++        const bool   arch_ok = model.arch == LLM_ARCH_QWEN35 || model.arch == LLM_ARCH_QWEN3NEXT || model.arch == LLM_ARCH_QWEN35MOE;
++        if (n_rs_seq > 0 && env != nullptr && atoi(env) != 0 && arch_ok &&
++            hparams.ssm_d_state > 0 && hparams.ssm_n_group > 0 && hparams.ssm_d_inner > 0 && hparams.ssm_dt_rank > 0) {
++            rs_replay = true;
++            log_tok_k = hparams.ssm_d_state * hparams.ssm_n_group;
++            log_tok_v = hparams.ssm_d_inner;
++            log_tok_g = hparams.ssm_dt_rank;
++            n_embd_l  = n_rs_seq * (log_tok_k + log_tok_v + 2 * log_tok_g);
++        }
++    }
++
+     cells.clear();
+     cells.resize(mem_size);
+ 
+@@ -53,7 +67,7 @@ llama_memory_recurrent::llama_memory_recurrent(
+         if (it == ctx_map.end()) {
+             ggml_init_params params = {
+                 // r and s per layer, plus the separate PLE conv row where the model has one
+-                /*.mem_size   =*/ size_t((hparams.ple_conv_state() > 0 ? 3u : 2u)*n_layer*ggml_tensor_overhead()),
++                /*.mem_size   =*/ size_t((hparams.ple_conv_state() > 0 ? 4u : 3u)*n_layer*ggml_tensor_overhead()),
+                 /*.mem_buffer =*/ NULL,
+                 /*.no_alloc   =*/ true,
+             };
+@@ -74,6 +88,7 @@ llama_memory_recurrent::llama_memory_recurrent(
+     r_l.resize(n_layer);
+     s_l.resize(n_layer);
+     p_l.resize(n_layer);
++    l_l.resize(n_layer);
+ 
+     for (int i = 0; i < n_layer; i++) {
+         if (filter && !filter(i)) {
+@@ -99,9 +114,15 @@ llama_memory_recurrent::llama_memory_recurrent(
+             throw std::runtime_error("failed to create ggml context for rs cache");
+         }
+ 
+-        const uint32_t n_rows = mem_size * (1 + n_rs_seq);
++        const uint32_t n_rows   = mem_size * (1 + n_rs_seq);
++        const uint32_t n_rows_s = rs_replay ? mem_size : n_rows; // replay log: one state per cell
+         ggml_tensor * r = ggml_new_tensor_2d(ctx, type_r, hparams.n_embd_r(), n_rows);
+-        ggml_tensor * s = ggml_new_tensor_2d(ctx, type_s, hparams.n_embd_s(), n_rows);
++        ggml_tensor * s = ggml_new_tensor_2d(ctx, type_s, hparams.n_embd_s(), n_rows_s);
++        if (rs_replay) {
++            ggml_tensor * l = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_embd_l, mem_size);
++            ggml_format_name(l, "cache_l_l%d", i);
++            l_l[i] = l;
++        }
+         ggml_format_name(r, "cache_r_l%d", i);
+         ggml_format_name(s, "cache_s_l%d", i);
+         r_l[i] = r;
+@@ -149,6 +170,7 @@ void llama_memory_recurrent::clear(bool data) {
+         cells[i].src = -1;
+         cells[i].tail = -1;
+         cells[i].rs_max = 0;
++        cells[i].n_log = 0;
+     }
+ 
+     head = 0;
+@@ -207,6 +229,16 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
+                     return true;
+                 }
+                 const llama_pos rollback = cell.pos - (p0 - 1);
++                if (rs_replay) {
++                    // any number of the logged rows, in one or several steps
++                    const uint32_t done = rs_idx[seq_id];
++                    if (rollback >= 1 && done + (uint32_t) rollback <= cell.n_log) {
++                        set_rs_idx(seq_id, done + (uint32_t) rollback);
++                        cell.pos = p0 - 1;
++                        return true;
++                    }
++                    return false;
++                }
+                 // pending rollback is single-use
+                 const bool pending = rs_idx[seq_id] != 0;
+                 if (!pending && rollback >= 1 && rollback <= (llama_pos) cell.rs_max) {
+@@ -293,6 +325,10 @@ void llama_memory_recurrent::seq_cp(llama_seq_id seq_id_src, llama_seq_id seq_id
+ 
+             cell_src.seq_id.insert(seq_id_dst);
+             tail_dst.tail = tail_src.tail;
++            if (rs_replay) {
++                // the copy shares the cell and its log: it must also share the rows rolled back
++                set_rs_idx(seq_id_dst, rs_idx[seq_id_src]);
++            }
+         }
+     }
+ }
+@@ -615,6 +651,7 @@ bool llama_memory_recurrent::find_slot(const llama_ubatch & ubatch) {
+                 auto & orig_cell = cells[seq_meta.tail];
+                 empty_cell.pos = orig_cell.pos;
+                 empty_cell.src = orig_cell.src;
++                empty_cell.n_log = orig_cell.n_log;
+                 orig_cell.seq_id.erase(seq_id);
+                 empty_cell.seq_id.insert(seq_id); // will be overwritten
+                 GGML_ASSERT(!orig_cell.is_empty()); // has at least one remaining seq_id
+@@ -645,6 +682,7 @@ bool llama_memory_recurrent::find_slot(const llama_ubatch & ubatch) {
+ 
+             std::swap(dst_cell.pos, src_cell.pos);
+             std::swap(dst_cell.src, src_cell.src);
++            std::swap(dst_cell.n_log, src_cell.n_log);
+             std::swap(dst_cell.seq_id, src_cell.seq_id);
+ 
+             // swap tails
+@@ -674,6 +712,17 @@ bool llama_memory_recurrent::find_slot(const llama_ubatch & ubatch) {
+         }
+         cell.pos = last_pos;
+         cell.rs_max = n_seq_tokens <= n_rs_seq + 1 ? n_seq_tokens - 1 : 0;
++        if (rs_replay) {
++            // rows of the old log this ubatch replays (a fresh cell reads the zero state: none), then the log
++            // becomes the last rows of this ubatch
++            const llama_seq_id seq  = ubatch.seq_id[i][0];
++            const uint32_t     done = (size_t) seq < rs_idx.size() ? rs_idx[seq] : 0;
++            cell.n_keep0 = cell.src < 0 ? 0 : cell.n_log - std::min(done, cell.n_log);
++            // a single-row ubatch stores its final state (as with the snapshot ring, where it cannot be rolled
++            // back either): autoregressive decoding then pays no replay
++            cell.n_log   = n_seq_tokens == 1 ? 0 : std::min(n_seq_tokens, n_rs_seq);
++            cell.rs_max  = cell.n_log;
++        }
+         cell.seq_id.clear();
+         for (int32_t j = 0; j < ubatch.n_seq_id[i]; ++j) {
+             const llama_seq_id seq_id = ubatch.seq_id[i][j];
+@@ -785,6 +834,7 @@ void llama_memory_recurrent::state_write(llama_io_write_i & io, llama_seq_id seq
+ 
+     std::vector<std::pair<uint32_t, uint32_t>> cell_ranges; // ranges, from inclusive, to exclusive
+     std::vector<std::pair<uint32_t, uint32_t>> cell_ranges_data; // logical source row ranges
++    std::vector<std::pair<uint32_t, uint32_t>> cell_ranges_cells; // source cells without rollback slot
+     uint32_t cell_count = 0;
+ 
+     // Count the number of cells with the specified seq_id
+@@ -823,6 +873,13 @@ void llama_memory_recurrent::state_write(llama_io_write_i & io, llama_seq_id seq
+             } else {
+                 cell_ranges_data.back().second++;
+             }
++            // replay log: the state and log rows have no rollback slots
++            const uint32_t cell_plain = cell.src >= 0 ? cell.src : (int32_t) i;
++            if (cell_ranges_cells.empty() || cell_ranges_cells.back().second != cell_plain) {
++                cell_ranges_cells.emplace_back(cell_plain, cell_plain + 1);
++            } else {
++                cell_ranges_cells.back().second++;
++            }
+ 
+             if (cell_range_begin == size) {
+                 cell_range_begin = i;
+@@ -858,7 +915,7 @@ void llama_memory_recurrent::state_write(llama_io_write_i & io, llama_seq_id seq
+     io.write(&cell_count, sizeof(cell_count));
+ 
+     state_write_meta(io, cell_ranges, seq_id);
+-    state_write_data(io, cell_ranges_data);
++    state_write_data(io, cell_ranges_data, cell_ranges_cells);
+ }
+ 
+ void llama_memory_recurrent::state_read(llama_io_read_i & io, llama_seq_id seq_id, llama_state_seq_flags flags) {
+@@ -907,11 +964,23 @@ void llama_memory_recurrent::state_write_meta(llama_io_write_i & io, const std::
+                     io.write(&seq_id, sizeof(seq_id));
+                 }
+             }
++
++            if (rs_replay) {
++                // rows of the log that belong to the saved position
++                llama_seq_id seq = seq_id;
++                if (seq == -1 && !cell.seq_id.empty()) {
++                    seq = *cell.seq_id.begin();
++                }
++                const uint32_t done   = seq >= 0 && (size_t) seq < rs_idx.size() ? rs_idx[seq] : 0;
++                const uint32_t n_keep = cell.n_log - std::min(done, cell.n_log);
++                io.write(&n_keep, sizeof(n_keep));
++            }
+         }
+     }
+ }
+ 
+-void llama_memory_recurrent::state_write_data(llama_io_write_i & io, const std::vector<std::pair<uint32_t, uint32_t>> & cell_ranges) const {
++void llama_memory_recurrent::state_write_data(llama_io_write_i & io, const std::vector<std::pair<uint32_t, uint32_t>> & cell_ranges,
++                                              const std::vector<std::pair<uint32_t, uint32_t>> & cell_ranges_cells) const {
+     const uint32_t s_trans = 0;
+     const uint32_t n_layer = hparams.n_layer();
+ 
+@@ -967,12 +1036,25 @@ void llama_memory_recurrent::state_write_data(llama_io_write_i & io, const std::
+ 
+             // Write each logical cell row range. With pending recurrent rollback,
+             // the logical current state may live in a rollback snapshot plane.
+-            for (const auto & range : cell_ranges) {
++            // (replay log: one state per cell, the rollback is in the metadata)
++            for (const auto & range : (rs_replay ? cell_ranges_cells : cell_ranges)) {
+                 const size_t range_size = range.second - range.first;
+                 const size_t buf_size = range_size * s_size_row;
+                 io.write_tensor(s_l[il], range.first * s_size_row, buf_size);
+             }
+         }
++
++        if (rs_replay) {
++            for (uint32_t il = 0; il < n_layer; ++il) {
++                if (l_l[il] == nullptr) continue;
++
++                const uint64_t l_size_row = ggml_row_size(l_l[il]->type, n_embd_l);
++                io.write(&l_size_row, sizeof(l_size_row));
++                for (const auto & range : cell_ranges_cells) {
++                    io.write_tensor(l_l[il], range.first * l_size_row, (range.second - range.first) * l_size_row);
++                }
++            }
++        }
+     } else {
+         // When S tensor is transposed, we also need the element size and get the element ranges from each row
+         const uint32_t mem_size = size;
+@@ -1023,6 +1105,7 @@ bool llama_memory_recurrent::state_read_meta(llama_io_read_i & io, uint32_t cell
+         llama_batch_allocr balloc(hparams.n_pos_per_embd());
+ 
+         llama_ubatch ubatch = balloc.ubatch_reserve(cell_count, 1);
++        std::vector<uint32_t> n_keep_read;
+ 
+         for (uint32_t i = 0; i < cell_count; ++i) {
+             llama_pos pos;
+@@ -1036,6 +1119,12 @@ bool llama_memory_recurrent::state_read_meta(llama_io_read_i & io, uint32_t cell
+                 return false;
+             }
+ 
++            if (rs_replay) {
++                uint32_t n_keep;
++                io.read(&n_keep, sizeof(n_keep));
++                n_keep_read.push_back(n_keep);
++            }
++
+             ubatch.pos[i] = pos;
+         }
+         ubatch.n_seq_id[0] = 1;
+@@ -1053,6 +1142,9 @@ bool llama_memory_recurrent::state_read_meta(llama_io_read_i & io, uint32_t cell
+         GGML_ASSERT(cells[head + cell_count - 1].pos == ubatch.pos[cell_count - 1]);
+         GGML_ASSERT(cells[head].has_seq_id(dest_seq_id));
+         GGML_ASSERT(cells[head + cell_count - 1].has_seq_id(dest_seq_id));
++        for (uint32_t i = 0; i < cell_count && i < n_keep_read.size(); ++i) {
++            cells[head + i].n_log = std::min(n_keep_read[i], n_rs_seq);
++        }
+     } else {
+         // whole KV cache restore
+ 
+@@ -1092,6 +1184,12 @@ bool llama_memory_recurrent::state_read_meta(llama_io_read_i & io, uint32_t cell
+                 }
+                 tail = i;
+             }
++
++            if (rs_replay) {
++                uint32_t n_keep;
++                io.read(&n_keep, sizeof(n_keep));
++                cell.n_log = std::min(n_keep, n_rs_seq);
++            }
+         }
+ 
+         head = 0;
+@@ -1198,6 +1296,23 @@ bool llama_memory_recurrent::state_read_data(llama_io_read_i & io, uint32_t cell
+                 io.read_tensor(s_l[il], head * s_size_row, cell_count * s_size_row);
+             }
+         }
++
++        if (rs_replay) {
++            for (uint32_t il = 0; il < n_layer; ++il) {
++                if (l_l[il] == nullptr) continue;
++
++                uint64_t l_size_row_ref;
++                io.read(&l_size_row_ref, sizeof(l_size_row_ref));
++                const size_t l_size_row = ggml_row_size(l_l[il]->type, n_embd_l);
++                if (l_size_row != l_size_row_ref) {
++                    LLAMA_LOG_ERROR("%s: mismatched replay log row size (%zu != %zu, layer %d)\n", __func__, l_size_row, (size_t) l_size_row_ref, il);
++                    return false;
++                }
++                if (cell_count) {
++                    io.read_tensor(l_l[il], head * l_size_row, cell_count * l_size_row);
++                }
++            }
++        }
+     } else {
+         // For each layer, read the values for each cell (transposed)
+         for (uint32_t il = 0; il < n_layer; ++il) {
+@@ -1360,6 +1475,41 @@ ggml_tensor * llama_memory_recurrent_context::get_p_l(int32_t il) const {
+     return mem->p_l[il];
+ }
+ 
++ggml_tensor * llama_memory_recurrent_context::get_l_l(int32_t il) const {
++    return mem->l_l[il];
++}
++
++bool llama_memory_recurrent_context::rs_replay() const {
++    return mem->rs_replay;
++}
++
++int32_t llama_memory_recurrent_context::s_copy_cell(int i) const {
++    return mem->cells[i + mem->head].src0;
++}
++
++uint32_t llama_memory_recurrent_context::rs_keep(int i) const {
++    return is_full ? 0 : mem->cells[i + mem->head].n_keep0;
++}
++
++uint32_t llama_memory_recurrent_context::get_rs_replay_len() const {
++    if (!mem->rs_replay) {
++        return 0;
++    }
++    if (is_full) {
++        return mem->n_rs_seq; // reserve for the longest replay
++    }
++    uint32_t res = 0;
++    const uint32_t n_seqs = ubatches[i_next].n_seqs;
++    for (uint32_t s = 0; s < n_seqs; ++s) {
++        res = std::max(res, mem->cells[mem->head + s].n_keep0);
++    }
++    return res;
++}
++
++uint32_t llama_memory_recurrent_context::get_rs_log_rows() const {
++    return mem->n_rs_seq;
++}
++
+ int32_t llama_memory_recurrent_context::s_copy(int i) const {
+     const uint32_t cell_idx = i + mem->head;
+     const int32_t  src0     = mem->cells[cell_idx].src0;
+diff --git a/src/llama-memory-recurrent.h b/src/llama-memory-recurrent.h
+index 6442fc1c1..a11397090 100644
+--- a/src/llama-memory-recurrent.h
++++ b/src/llama-memory-recurrent.h
+@@ -77,6 +77,17 @@ public:
+     // per-seq rollback index
+     std::vector<uint32_t> rs_idx;
+ 
++    // Replay log (LLAMA_RS_REPLAY=1, delta-net models): instead of one state snapshot per row, s_l keeps one state
++    // per cell (the state before the last n_log rows of the sequence) and l_l keeps the inputs of those rows
++    // (k, v, gate, beta; field-major, n_rs_seq rows each). The next ubatch replays the rows that were not rolled
++    // back, so a pass reads and writes the state once whatever the number of rows, any number of the last
++    // n_log rows can be rolled back, and repeatedly. rs_idx[seq] is the number of log rows rolled back.
++    bool     rs_replay = false;
++    uint32_t n_embd_l  = 0;  // floats per cell row of l_l
++    uint32_t log_tok_k = 0;  // floats per token: k
++    uint32_t log_tok_v = 0;  //                   v
++    uint32_t log_tok_g = 0;  //                   gate (and beta)
++
+     void set_rs_idx(llama_seq_id seq_id, uint32_t idx);
+ 
+     // computed before each graph build
+@@ -96,6 +107,11 @@ public:
+         // writes snapshots 0..n-1, a longer one only guarantees the final state (ggml_gated_delta_net)
+         uint32_t rs_max = 0;
+ 
++        // replay log: rows in the log of this cell, and (staged for the graph inputs of the ubatch being
++        // processed) how many of the rows the cell had before the ubatch are replayed
++        uint32_t n_log   = 0;
++        uint32_t n_keep0 = 0;
++
+         std::set<llama_seq_id> seq_id;
+ 
+         bool has_seq_id(const llama_seq_id & id) const {
+@@ -118,6 +134,8 @@ public:
+     std::vector<ggml_tensor *> s_l;
+     // a second conv history that must stay replicated across devices, so it cannot share the r row
+     std::vector<ggml_tensor *> p_l;
++    // replay log rows (rs_replay only)
++    std::vector<ggml_tensor *> l_l;
+ 
+ private:
+     //const llama_model & model;
+@@ -138,7 +156,8 @@ private:
+     size_t size_p_bytes() const;
+ 
+     void state_write_meta(llama_io_write_i & io, const std::vector<std::pair<uint32_t, uint32_t>> & cell_ranges, llama_seq_id seq_id = -1) const;
+-    void state_write_data(llama_io_write_i & io, const std::vector<std::pair<uint32_t, uint32_t>> & cell_ranges) const;
++    void state_write_data(llama_io_write_i & io, const std::vector<std::pair<uint32_t, uint32_t>> & cell_ranges,
++                          const std::vector<std::pair<uint32_t, uint32_t>> & cell_ranges_cells) const;
+ 
+     bool state_read_meta(llama_io_read_i & io, uint32_t cell_count, llama_seq_id dest_seq_id = -1);
+     bool state_read_data(llama_io_read_i & io, uint32_t cell_count);
+@@ -184,9 +203,18 @@ public:
+     ggml_tensor * get_r_l(int32_t il) const;
+     ggml_tensor * get_s_l(int32_t il) const;
+     ggml_tensor * get_p_l(int32_t il) const;
++    ggml_tensor * get_l_l(int32_t il) const;
+ 
+     int32_t s_copy(int i) const;
+ 
++    // replay log: source cell of cell head + i (no rollback slot), rows of its log to replay, the largest such
++    // count among the sequences of the ubatch, and the log layout
++    bool     rs_replay() const;
++    int32_t  s_copy_cell(int i) const;
++    uint32_t rs_keep(int i) const;
++    uint32_t get_rs_replay_len() const;
++    uint32_t get_rs_log_rows() const;
++
+ private:
+     const llama_memory_status status;
+ 
+diff --git a/src/models/delta-net-base.cpp b/src/models/delta-net-base.cpp
+index 4c0c24d6c..1a789497c 100644
+--- a/src/models/delta-net-base.cpp
++++ b/src/models/delta-net-base.cpp
+@@ -469,6 +469,141 @@ ggml_tensor * llm_build_delta_net_base::build_conv_state(
+     return conv_input;
+ }
+ 
++// Replay log instead of per-row snapshots (llama_memory_recurrent::rs_replay). The cache holds one state per
++// sequence, the state before the rows in its log. This ubatch feeds [logged rows that were kept, new rows] to the
++// recurrence, stores the state after the replayed rows as the new base (one write) and logs the inputs of its last
++// rows. Rows of the log that are not replayed (rolled back, or past a shorter log) run with beta = 0 and gate = 0,
++// which leaves the state as it is.
++ggml_tensor * llm_build_delta_net_base::build_recurrent_attn_replay(
++        llm_graph_input_rs * inp,
++        ggml_tensor *        ssm_states_all,
++        ggml_tensor *        q,
++        ggml_tensor *        k,
++        ggml_tensor *        v,
++        ggml_tensor *        g,
++        ggml_tensor *        b,
++        ggml_tensor *        s,
++        int                  il) {
++    const auto * mctx_cur   = inp->mctx;
++    const auto   kv_head    = mctx_cur->get_head();
++
++    const int64_t S_v          = s->ne[0];
++    const int64_t H_v          = s->ne[2];
++    const int64_t n_seqs       = s->ne[3];
++    const int64_t n_seq_tokens = q->ne[2];
++    const int64_t S_k          = k->ne[0];
++    const int64_t H_k          = k->ne[1];
++    const int64_t G            = g->ne[0];
++    const int64_t D            = S_v * S_v * H_v;
++
++    const int64_t K_log = mctx_cur->get_rs_log_rows();
++    const int64_t Lr    = inp->rs_replay_len;                      // rows replayed in this ubatch
++    // rows this ubatch logs (a single row is committed directly, see llama_memory_recurrent::find_slot)
++    const int64_t w     = n_seq_tokens == 1 ? 0 : std::min<int64_t>(n_seq_tokens, K_log);
++    const int64_t T     = Lr + n_seq_tokens;
++
++    ggml_tensor * log_all = mctx_cur->get_l_l(il);
++    GGML_ASSERT(log_all != nullptr);
++
++    // row of the log: k, v, gate, beta of K_log tokens, field after field
++    const int64_t n_k = S_k * H_k * K_log;
++    const int64_t n_v = S_v * H_v * K_log;
++    const int64_t n_g = G * H_v * K_log;
++    const int64_t n_b = H_v * K_log;
++    GGML_ASSERT(log_all->ne[0] == n_k + n_v + n_g + n_b && "replay log layout mismatch (needs the fused GDN path)");
++    GGML_ASSERT(q->ne[0] == S_k && q->ne[1] == H_k && q->ne[3] == n_seqs && k->ne[3] == n_seqs);
++
++    const size_t es = ggml_element_size(log_all);
++
++    // gather the logs of the ubatch (and move those of the extra cells), like the states
++    ggml_tensor * logs = build_rs(inp, log_all, log_all->ne[0], n_seqs);
++
++    ggml_tensor * q_in = q;
++    ggml_tensor * k_in = k;
++    ggml_tensor * v_in = v;
++    ggml_tensor * g_in = g;
++    ggml_tensor * b_in = b;
++
++    if (Lr > 0) {
++        auto field = [&](int64_t d0, int64_t d1, int64_t off) {
++            return ggml_view_4d(ctx0, logs, d0, d1, Lr, n_seqs, d0*es, d0*d1*es, logs->nb[1], off*es);
++        };
++        ggml_tensor * k_log = field(S_k, H_k, 0);
++        ggml_tensor * v_log = field(S_v, H_v, n_k);
++        ggml_tensor * g_log = ggml_mul(ctx0, ggml_cont(ctx0, field(G, H_v, n_k + n_v)),       inp->rs_mask);
++        ggml_tensor * b_log = ggml_mul(ctx0, ggml_cont(ctx0, field(1, H_v, n_k + n_v + n_g)), inp->rs_mask);
++
++        // the attention scores of the replayed rows are not used: k stands in for q there
++        q_in = ggml_concat(ctx0, k_log, q, 2);
++        k_in = ggml_concat(ctx0, k_log, k, 2);
++        v_in = ggml_concat(ctx0, v_log, v, 2);
++        g_in = ggml_concat(ctx0, g_log, g, 2);
++        b_in = ggml_concat(ctx0, b_log, b, 2);
++    }
++
++    // K = 1 with the snapshot w tokens back: the state after the replayed rows (and after the rows of a long
++    // ubatch that the log does not hold)
++    ggml_tensor * gdn_out = ggml_gated_delta_net(ctx0, q_in, k_in, v_in, g_in, b_in, s, 1);
++    if (w > 0) {
++        ggml_gated_delta_net_set_snap_back(gdn_out, (int32_t) w);
++    }
++    if (Lr > 0) {
++        ggml_gated_delta_net_set_n_replay(gdn_out, (int32_t) Lr);
++    }
++    if (T > 1) {
++        res->add_fused_node({LLM_FUSED_OP_GDN_CH, gdn_out, il});
++    } else {
++        res->add_fused_node({LLM_FUSED_OP_GDN_AR, gdn_out, il});
++    }
++
++    // new base state -> cache (one row per cell)
++    {
++        ggml_tensor * src = ggml_view_3d(ctx0, gdn_out,
++            D, n_seqs, 1,
++            ggml_row_size(gdn_out->type, D),
++            ggml_row_size(gdn_out->type, D * n_seqs),
++            ggml_row_size(gdn_out->type, S_v * H_v * T * n_seqs));
++
++        const size_t row_size = hparams.n_embd_s() * ggml_element_size(ssm_states_all);
++        ggml_tensor * dst = ggml_view_3d(ctx0, ssm_states_all,
++            D, n_seqs, 1,
++            ssm_states_all->nb[1],
++            (size_t) mctx_cur->get_size() * row_size,
++            (size_t) kv_head * row_size);
++
++        ggml_build_forward_expand(gf, ggml_cpy(ctx0, src, dst));
++    }
++
++    // the last w rows of this ubatch -> log
++    if (w > 0) {
++        auto store = [&](ggml_tensor * x, int64_t d0, int64_t d1, int64_t off) {
++            ggml_tensor * src = ggml_view_4d(ctx0, x, d0, d1, w, n_seqs,
++                x->nb[1], x->nb[2], x->nb[3], (n_seq_tokens - w) * x->nb[2]);
++            ggml_tensor * dst = ggml_view_4d(ctx0, log_all, d0, d1, w, n_seqs,
++                d0*es, d0*d1*es, log_all->nb[1], (size_t) kv_head * log_all->nb[1] + off*es);
++            ggml_build_forward_expand(gf, ggml_cpy(ctx0, src, dst));
++        };
++        store(k, S_k, H_k, 0);
++        store(v, S_v, H_v, n_k);
++        store(g, G,   H_v, n_k + n_v);
++        store(b, 1,   H_v, n_k + n_v + n_g);
++    }
++
++    // attention scores of the new rows
++    ggml_tensor * output = ggml_view_4d(ctx0, gdn_out,
++        S_v, H_v, n_seq_tokens, n_seqs,
++        ggml_row_size(gdn_out->type, S_v),
++        ggml_row_size(gdn_out->type, S_v * H_v),
++        ggml_row_size(gdn_out->type, S_v * H_v * T),
++        ggml_row_size(gdn_out->type, S_v * H_v * Lr));
++    if (Lr > 0) {
++        output = ggml_cont(ctx0, output);
++    }
++    cb(output, "attn_output", il);
++
++    return output;
++}
++
+ ggml_tensor * llm_build_delta_net_base::build_recurrent_attn(
+         llm_graph_input_rs * inp,
+         ggml_tensor *        ssm_states_all,
+@@ -508,6 +643,10 @@ ggml_tensor * llm_build_delta_net_base::build_recurrent_attn(
+     const int64_t D = S_v * S_v * H_v;
+     const int64_t K = cparams.n_rs_seq + 1;
+ 
++    if (mctx_cur->rs_replay()) {
++        return build_recurrent_attn_replay(inp, ssm_states_all, q, k, v, g, b, s, il);
++    }
++
+     // state s is 4D [S_v, S_v, H_v, n_seqs]; K snapshot slots are written into the output.
+     ggml_tensor * gdn_out = ggml_gated_delta_net(ctx0, q, k, v, g, b, s, K);
+     if (n_seq_tokens > 1) {
+diff --git a/src/models/models.h b/src/models/models.h
+index f2c43b800..c1baaa29f 100644
+--- a/src/models/models.h
++++ b/src/models/models.h
+@@ -98,6 +98,18 @@ struct llm_build_delta_net_base : public llm_graph_context {
+             ggml_tensor *        b,
+             ggml_tensor *        s,
+             int                  il);
++
++    // same, with the replay log instead of per-row state snapshots (llama_memory_recurrent::rs_replay)
++    ggml_tensor * build_recurrent_attn_replay(
++            llm_graph_input_rs * inp,
++            ggml_tensor *        ssm_states_all,
++            ggml_tensor *        q,
++            ggml_tensor *        k,
++            ggml_tensor *        v,
++            ggml_tensor *        g,
++            ggml_tensor *        b,
++            ggml_tensor *        s,
++            int                  il);
+ };
+ 
+ struct llm_build_lfm_base : public llm_graph_context {
+diff --git a/tests/test-backend-ops.cpp b/tests/test-backend-ops.cpp
+index 852b62701..6289e6807 100644
+--- a/tests/test-backend-ops.cpp
++++ b/tests/test-backend-ops.cpp
+@@ -5169,16 +5169,18 @@ struct test_gated_delta_net : public test_case {
+     const bool    permuted;
+     const bool    kda;
+     const int64_t K; // snapshot slot count: 1 = final-only, >1 = last K states
++    const int     snap_back; // K == 1: the snapshot is the state this many tokens before the end
+ 
+     std::string vars() override {
+-        return VARS_TO_STR9(type, head_count, head_size, n_seq_tokens, n_seqs, v_repeat, permuted, kda, K);
++        return VARS_TO_STR9(type, head_count, head_size, n_seq_tokens, n_seqs, v_repeat, permuted, kda, K) +
++               ",snap_back=" + std::to_string(snap_back);
+     }
+ 
+     test_gated_delta_net(ggml_type type = GGML_TYPE_F32,
+             int64_t head_count = 4, int64_t head_size = 16, int64_t n_seq_tokens = 1, int64_t n_seqs = 1,
+-            int v_repeat = 1, bool permuted = false, bool kda = false, int64_t K = 1)
++            int v_repeat = 1, bool permuted = false, bool kda = false, int64_t K = 1, int snap_back = 0)
+         : type(type), head_count(head_count), head_size(head_size), n_seq_tokens(n_seq_tokens), n_seqs(n_seqs),
+-          v_repeat(v_repeat), permuted(permuted), kda(kda), K(K) {}
++          v_repeat(v_repeat), permuted(permuted), kda(kda), K(K), snap_back(snap_back) {}
+ 
+     ggml_tensor * build_graph(ggml_context * ctx) override {
+         ggml_tensor * q;
+@@ -5208,6 +5210,9 @@ struct test_gated_delta_net : public test_case {
+         q = ggml_l2_norm(ctx, q, 1e-6f);
+         k = ggml_l2_norm(ctx, k, 1e-6f);
+         ggml_tensor * out   = ggml_gated_delta_net(ctx, q, k, v, g, beta, state, K);
++        if (snap_back > 0) {
++            ggml_gated_delta_net_set_snap_back(out, snap_back);
++        }
+         return out;
+     }
+ 
+@@ -12988,6 +12993,12 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
+     // K > 1: output keeps the last min(n_tokens, K) per-token snapshots, ordered most-recent-first
+     // (slot 0 = final state, slot s = state s tokens back).
+     // exact-match cases (K == n_seq_tokens):
++    // single snapshot n tokens before the end (replay log)
++    for (int back : { 1, 3, 4 }) {
++        test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 16, 128, 4, 2, 3, false, false, 1, back));
++    }
++    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 16, 128, 12, 3, 3, false, false, 1, 8));
++    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, 6, 2, 1, false, true, 1, 2)); // KDA
+     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 16,   2, 1, 1, false, false, /*K=*/2));
+     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 32,   4, 1, 1, false, false, /*K=*/4));
+     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 64,   4, 2, 1, false, false, /*K=*/4));

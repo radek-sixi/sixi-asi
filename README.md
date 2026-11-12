@@ -2,20 +2,38 @@
 
 Speculative-decoding inference server for hybrid Gated-DeltaNet + attention LLMs (Qwen3.8 family) on NVIDIA
 unified-memory hardware. C++20, OpenAI-compatible HTTP API, llama.cpp as the compute backend, zero Python on the
-inference path. Public fork of a private research branch. **Version 0.10.**
+inference path. Public fork of a private research branch. **Version 0.11.**
 
-| | 0.9 | **0.10** |
+| | 0.10 | **0.11** |
 |---|---|---|
-| 4 requests at once, aggregate | one at a time (45 tok/s) | **94.2 tok/s** (`--parallel 4`) |
-| Reading a document for the first time | 300-340 tok/s | **570-710 tok/s** |
-| 59k-token document, first answer | ~190 s | **104 s** |
-| Next question about the same document | 0.65-1.0 s | **0.31-0.58 s** to first token |
-| Qwen3.8-27B decode, one stream, mean of 5 tasks | 45.3 tok/s | 45.7 tok/s (3.8x plain autoregressive) |
-| UD-Q4_K_XL weights (KL divergence 0.009 instead of 0.025) | 38.6 tok/s | **42.6 tok/s** |
+| 32 requests at once, aggregate | 129 tok/s | **169-171 tok/s** (`--parallel 32`) |
+| 16 requests at once | 129 tok/s | **151-154 tok/s** |
+| 4 requests at once | 94.2 tok/s | **103.5 tok/s** |
+| 16 agents with a 17.8k-token prompt each: wait for the next turn | up to 442 s | **under 3 s** |
+| Context memory for 32 streams | 70.2 GB | **27.1 GB** |
+| Default weights | Q4_K_M (KL divergence 0.025 to BF16) | **UD-Q4_K_XL v3.1 (0.008)** at 44.0 tok/s |
+| One stream, Q4_K_M, mean of 5 tasks | 45.7 tok/s | 45.5 tok/s (3.8x plain autoregressive) |
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/concurrency-dark.svg">
-  <img src="assets/concurrency-light.svg" alt="Aggregate tokens per second with 1 to 4 concurrent requests on NVIDIA Jetson AGX Thor, Qwen3.8-27B with the DSpine drafter. sixi-asi 0.10 with four parallel streams: 39.6, 62.1, 81.4, 94.2. llama-server with four slots: 37.4, 61.0, 76.3, 83.8." width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="assets/streams-dark.svg">
+  <img src="assets/streams-light.svg" alt="Aggregate tokens per second with 4, 8, 16 and 32 concurrent requests on NVIDIA Jetson AGX Thor, Qwen3.8-27B Q4_K_M with the DSpine drafter. Version 0.10: 94.2, 113.5, 128.8, 129.4. Version 0.11: 103.5, 123.4, 154.4, 168.9." width="100%">
+</picture>
+
+## What changed in 0.11
+
+| Area | Change | Effect |
+|---|---|---|
+| Recurrent state rollback | llama.cpp patch 0007: one state per sequence plus a log of the last rows' inputs, replayed on rollback, instead of one 144 MiB snapshot per verified row | context memory for 32 streams 70.2 -> 27.1 GB; whole-batch and repeated rollbacks are legal |
+| Recurrent state reads | Patch 0006: the delta-net kernel reads the states in place and concatenates without a copy | 32 streams 129 -> 169 tok/s together with 0007 |
+| Shared passes | The rendezvous window follows the last pass time, and a stream that misses a pass no longer splits it into several weight reads | 16 streams 129 -> 154 tok/s |
+| Long prompts under load | Prefills of 1024+ tokens run outside the request lock and hand the device to waiting requests between chunks | 16 agents: a follow-up waits under 3 s instead of up to 442 s |
+| Memory admission | Patch 0005 sizes a context without allocating it; the server refuses a configuration that does not fit and says what would | no more out-of-memory hangs on unified memory |
+| Default weights | Unsloth Dynamic v3.1 UD-Q4_K_XL | KL divergence to BF16 0.008 instead of 0.025 for 2-7% of the speed |
+| Voting | `"vote": true` with `n` samples: the server returns the majority answer and stops the remaining samples once it is decided | three samples of a hard question in less time than three full answers |
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/agents-dark.svg">
+  <img src="assets/agents-light.svg" alt="Sixteen agents with a 17.8k-token prompt each, time to first token of a follow-up question. Second turn median: 223 seconds with 0.10 scheduling, 2.8 seconds with 0.11. Slowest follow-up: 442 seconds and 2.9 seconds." width="100%">
 </picture>
 
 ## What changed in 0.10
@@ -38,37 +56,48 @@ inference path. Public fork of a private research branch. **Version 0.10.**
 
 NVIDIA Jetson AGX Thor developer kit (122.9 GiB unified LPDDR5X, ~273 GB/s, CUDA 13.2, MAXN). Qwen3.8-27B, greedy,
 identical prompts for every engine, 256 generated tokens. llama.cpp a691b234 plus `patches/llama.cpp` for sixi-asi
-and llama-server. The 0.10 rows, the concurrency table, the quality gate and the long-context table were re-measured
-on the published build; rows marked 0.9 and the other engines are from the 0.9.0 run. Raw JSON is in
-`configs/benchmarks/2026-11-10/`.
+and llama-server. The 0.11 rows were measured on the published build with the library built from the clean pinned
+commit and the eight patches (raw JSON in `configs/benchmarks/2026-11-12/`); rows marked 0.9 and 0.10 and the other
+engines are from those releases' runs. The 0.10 figures beyond 4 streams and the 0.10 agent waits were measured on
+the 0.10 code before this work started.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/engines-dark.svg">
-  <img src="assets/engines-light.svg" alt="Decode tokens per second, one stream, Qwen3.8-27B on NVIDIA Jetson AGX Thor: sixi-asi 0.10 DSpine 45.7, TensorRT Edge-LLM DFlash2 45.4, llama-server DSpine 43.7, sixi-asi 0.10 DSpine on UD-Q4_K_XL 42.6, sixi-asi 0.9 DFlash2 41.4, sixi-asi 0.9 DSpark 37.2, Edge-LLM DSpark 36.1, sixi-asi 0.8 23.2, llama-server autoregressive 11.9" width="100%">
+  <img src="assets/engines-light.svg" alt="Decode tokens per second, one stream, Qwen3.8-27B on NVIDIA Jetson AGX Thor: sixi-asi 0.11 DSpine 45.5, TensorRT Edge-LLM DFlash2 45.4, sixi-asi 0.11 DSpine on UD-Q4_K_XL v3.1 44.0, llama-server DSpine 43.7, sixi-asi 0.9 DFlash2 41.4, sixi-asi 0.9 DSpark 37.2, Edge-LLM DSpark 36.1, sixi-asi 0.8 23.2, llama-server autoregressive 11.9" width="100%">
 </picture>
 
 **One stream** (`scripts/ab_bench.py`, median of 3 runs per task, mean of 5 tasks):
 
 | Engine | Weights | Drafter | tok/s | vs AR |
 |---|---|---|---|---|
-| **sixi-asi 0.10** | Q4_K_M | DSpine b16 | **45.7** | **3.8x** |
+| **sixi-asi 0.11** | Q4_K_M | DSpine b16 | **45.5** | **3.8x** |
 | TensorRT Edge-LLM 0.11.1 | NVFP4 | DFlash2 | 45.4 | 3.8x |
 | llama-server | Q4_K_M | DSpine b16 | 43.7 | 3.7x |
-| **sixi-asi 0.10** | UD-Q4_K_XL | DSpine b16 | **42.6** | 3.6x |
+| **sixi-asi 0.11** | UD-Q4_K_XL v3.1 (default) | DSpine b16 | **44.0** | 3.7x |
 | sixi-asi 0.9 | Q4_K_M | DFlash2 | 41.4 | 3.5x |
 | sixi-asi 0.9 | Q4_K_M | DSpark | 37.2 | 3.1x |
 | TensorRT Edge-LLM 0.11.1 | NVFP4 | DSpark | 36.1 | 3.0x |
 | llama-server, autoregressive | Q4_K_M | - | 11.9 | 1.0x |
 
 **Concurrent requests** (`scripts/concurrency_bench.py`: every client thread answers the same five prompts, rotated,
-so the streams carry equal work; aggregate = all completion tokens / wall time, prefill included):
+so the streams carry equal work; aggregate = all completion tokens / wall time, prefill included). 1-4 streams on
+`--parallel 4`, 8-32 on `--parallel 32`:
 
-| Concurrent streams | sixi-asi `--parallel 4` | llama-server `-np 4`, draft 7 | llama-server `-np 4`, draft 15 |
-|---|---|---|---|
-| 1 | 39.6 | 37.4 | 38.2 |
-| 2 | 62.1 | 61.0 | 52.2 |
-| 3 | 81.4 | 76.3 | 59.5 |
-| 4 | **94.2** | 83.8 | 59.7 |
+| Concurrent streams | 1 | 2 | 4 | 8 | 16 | 32 |
+|---|---|---|---|---|---|---|
+| 0.11, UD-Q4_K_XL v3.1 (default) | 37.7 | 63.7 | 90.3 | 118.7 | 150.6 | **170.5** |
+| 0.11, Q4_K_M | 40.1 | 65.4 | 99.8 | 123.4 | 154.4 | **168.9** |
+| 0.11, Q4_K_M, 1-4 streams on `--parallel 32` | 38.3 | 65.1 | **103.5** | | | |
+| 0.10, Q4_K_M | 39.6 | 62.1 | 94.2 | 113.5 | 128.8 | 129.4 |
+| llama-server `-np 4`, draft 7 (0.10 run) | 37.4 | 61.0 | 83.8 | | | |
+
+With 32 streams each one decodes at 5.4-5.9 tok/s; with 16, about 10. Context memory for 36 sequences (32 streams and
+4 snapshot slots): 27.1 GB (25.3 GiB) for the target, 6.0 GB (5.6 GiB) for the drafter.
+
+**Many agents with long prompts** (`scripts/agents_bench.py`: 16 agents, each with its own 17.8k-token document and
+two follow-up questions, `--parallel 16 --ctx 24576`, default weights): a follow-up reaches its first token after
+2.8 s (median), 2.9 s at worst, while other agents are still loading their documents; the first answer takes 271 s
+(median) because sixteen cold 17.8k-token loads share one device. All three turns of all agents: 530 s.
 
 Plain autoregressive decoding batches as well: 11.8 tok/s for one stream, 41.0 aggregate for four.
 
@@ -76,6 +105,7 @@ Plain autoregressive decoding batches as well: 11.8 tok/s for one stream, 41.0 a
 
 | Run | GSM8K | HumanEval | Tool calls | Needle (6k) | tok/s |
 |---|---|---|---|---|---|
+| sixi-asi 0.11, DSpine, UD-Q4_K_XL v3.1 | 28/30 | 19/20 | pass | pass | 66.2 |
 | sixi-asi 0.10, DSpine, Q4_K_M | 28/30 | 19/20 | pass | pass | 67.7 |
 | same, as three concurrent clients on `--parallel 4` | 28/30 | 19/20 | pass | pass | - |
 | sixi-asi 0.10, DSpine, Q4_K_M, wider sample | 76/80 | 58/60 | | | |
@@ -87,6 +117,17 @@ the same positions where single-stream speculative output already leaves the aut
 near-ties that flip with the batch shape). Repeated solo runs are identical (`scripts/multistream_check.py`).
 Two items out of 60 between Q4_K_M and UD-Q4_K_XL is within noise; UD-Q4_K_XL is the closer one to the BF16 logits
 (KL divergence 0.009 vs 0.025).
+
+**Hard reasoning** (`scripts/hard_eval.py`: 40 AIME problems, 3 samples each, temperature 0.6, reasoning effort low,
+10240 tokens, 4 streams):
+
+| Weights | One sample | Majority of 3 | Any of 3 | KL divergence to BF16 |
+|---|---|---|---|---|
+| UD-Q4_K_XL v3.1 (default in 0.11) | 70.0% | 82.5% | 82.5% | 0.0077 |
+| Q4_K_M | 70.0% | 80.0% | 85.0% | 0.0248 |
+
+One problem either way at this sample size: the default changed because it is three times closer to the BF16 logits
+at 2-7% of the speed, not because of this table.
 
 **Long context** (`scripts/longctx_bench.py`, `--ctx 65536`, DSpine, Q4_K_M):
 
@@ -115,10 +156,13 @@ The KV cache costs about 70 KB per token (17 attention layers; the recurrent lay
 ## What it does
 
 - **Lossless speculative decoding with O(1) state rollback.** A drafter proposes up to 15 tokens, the target
-  verifies them in one batched pass, and the recurrent state rolls back through llama.cpp's snapshot ring. Greedy
-  and sampled decoding both match plain autoregressive sampling (distribution-tested).
-- **Parallel streams.** `--parallel N` decodes N requests at once; their draft and verify passes share one forward
-  pass, the draft length adapts to the stream count, and prefill time-slices with generation.
+  verifies them in one batched pass, and the recurrent state rolls back by replaying a short log of the rejected
+  rows' inputs (patch 0007) instead of keeping a snapshot per row. Greedy and sampled decoding both match plain
+  autoregressive sampling (distribution-tested).
+- **Parallel streams.** `--parallel N` (measured up to 32) decodes N requests at once; their draft and verify passes
+  share one forward pass, the draft length adapts to the stream count, and prefill time-slices with generation.
+- **Samples and voting.** `n` samples of one prompt share its prefill; `"vote": true` returns the majority answer
+  and stops the rest once it is decided.
 - **Prefix cache.** Live-state continuation, ring rollback, device-side snapshot slots and tail checkpoints; optional
   NVMe persistence. A repeated prompt needs no forward pass (TTFT 1 ms).
 - **Native Qwen3.8 chat template** (tools, reasoning effort, thinking on/off), byte-identical to llama.cpp's Jinja
@@ -130,7 +174,7 @@ The KV cache costs about 70 KB per token (17 attention layers; the recurrent lay
 
 ```bash
 # llama.cpp backend: pinned commit + patches/llama.cpp (sm_110, CUDA graphs, flash attention)
-scripts/build_llamacpp.sh a691b2345844
+scripts/build_llamacpp.sh        # a691b2345844 + patches 0001-0008
 
 cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j$(nproc)
 ctest --test-dir build --output-on-failure

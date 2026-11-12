@@ -244,6 +244,11 @@ public:
     virtual uint32_t stream_count() const noexcept { return 1; }
     virtual void bind_stream(uint32_t stream) noexcept { (void)stream; }
     virtual std::vector<int32_t> stream_context_tokens(uint32_t stream) const { return stream == 0 ? context_tokens() : std::vector<int32_t>{}; }
+    // Request setup (prefix-cache restore, rollback, prefill) as one exclusive section: the calling thread keeps the
+    // device between its setup operations, so a new request is ready after one wait instead of one per operation
+    // (with many streams every wait was a full shared pass, during which the stream was missing from the passes).
+    virtual void begin_setup() noexcept {}
+    virtual void end_setup() noexcept {}
     virtual void begin_generation() noexcept {}
     virtual void end_generation() noexcept {}
     virtual uint32_t generating_streams() const noexcept { return 0; }
@@ -411,6 +416,7 @@ public:
         uint32_t n_rs_seq = 8;                         // Recurrent-state snapshot ring depth (max O(1) rollback = n_rs_seq tokens)
         uint32_t n_outputs_max = 16;                   // Max logits/sampler outputs per ubatch (>= 1 + max draft k)
         uint32_t device_snapshot_slots = 4;            // extra sequences for O(ms) device-side prefix snapshots (0 = off)
+        bool rs_replay_log = true;                     // recurrent rollback by replay log instead of per-row state snapshots (needs library patch 0007; ignored by older libraries)
         uint32_t n_streams = 1;                        // parallel live sequences (batched multi-stream decoding); each gets n_ctx tokens
         bool ple_on_device = false;                    // place per_layer_token_embd on the GPU buffer; needs a CUDA get_rows kernel for its quant type (iq4_nl), else the scheduler copies the 27 GB table to the host every graph
         int32_t kv_type_k = -1;                        // ggml type for the K cache (-1 = library default f16; 8 = q8_0, 2 = q4_0)
@@ -492,6 +498,8 @@ public:
     uint32_t stream_count() const noexcept override;
     void bind_stream(uint32_t stream) noexcept override;
     std::vector<int32_t> stream_context_tokens(uint32_t stream) const override;
+    void begin_setup() noexcept override;
+    void end_setup() noexcept override;
     void begin_generation() noexcept override;
     void end_generation() noexcept override;
     uint32_t generating_streams() const noexcept override;

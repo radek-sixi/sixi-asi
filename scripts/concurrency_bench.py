@@ -17,9 +17,11 @@ def main():
     ap.add_argument("--url", required=True)
     ap.add_argument("--streams", default="1,2,4")
     ap.add_argument("--max-tokens", type=int, default=256)
+    ap.add_argument("--extra-json", default=None, help="JSON merged into every request body (e.g. chat_template_kwargs)")
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
     prompts = [p for _, p in ab_bench.PROMPTS]
+    extra = json.loads(a.extra_json) if a.extra_json else None
     rows = []
     for n in [int(x) for x in a.streams.split(",")]:
         # Every stream answers all prompts, each starting at a different one: the streams carry the same work and
@@ -29,7 +31,7 @@ def main():
         def run(i):
             for j in range(len(prompts)):
                 msgs = [{"role": "user", "content": prompts[(i + j) % len(prompts)]}]
-                res[i].append(ab_bench.stream_chat(a.url, msgs, a.max_tokens, 0.0, 42))
+                res[i].append(ab_bench.stream_chat(a.url, msgs, a.max_tokens, 0.0, 42, extra=extra))
 
         t0 = time.perf_counter()
         th = [threading.Thread(target=run, args=(i,)) for i in range(n)]

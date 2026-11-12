@@ -9,7 +9,7 @@
 # failure: do NOT point SIXI_LLAMA_LIB_PATH at a library whose layout differs.
 set -euo pipefail
 
-LLAMACPP_PIN="b2e5e9b28b2484fbf94b543432ece638996a8b97"   # 2026-08-21 upstream master, known-good with this tree
+LLAMACPP_PIN="a691b2345844ce1b430201fc5fd404ce062e05f2"   # the commit patches/llama.cpp 0001-0008 are written against
 COMMIT="${1:-$LLAMACPP_PIN}"
 DEST="${2:-$HOME/.unsloth/llama.cpp-pinned}"
 JOBS="${JOBS:-$(nproc)}"

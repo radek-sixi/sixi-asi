@@ -20,18 +20,18 @@
 <line x1="790.0" y1="92" x2="790.0" y2="366" stroke="#e4e3de" stroke-width="1"/>
 <text x="790.0" y="384.0" fill="#898781" font-size="11" text-anchor="middle" font-weight="400">50</text>
 <text x="560.0" y="402.0" fill="#898781" font-size="11" text-anchor="middle" font-weight="400">decode tokens per second (higher is better)</text>
-<text x="318.0" y="113.0" fill="#0b0b0b" font-size="13" text-anchor="end" font-weight="600">sixi-asi 0.10 · DSpine drafter (Q4_K_M)</text>
-<path d="M330.0,100.0 h416.4 a4,4 0 0 1 4,4 v10.0 a4,4 0 0 1 -4,4 h-416.4 z" fill="#2a78d6"/>
-<text x="758.4" y="113.0" fill="#0b0b0b" font-size="13" text-anchor="start" font-weight="600">45.7</text>
+<text x="318.0" y="113.0" fill="#0b0b0b" font-size="13" text-anchor="end" font-weight="600">sixi-asi 0.11 · DSpine drafter (Q4_K_M)</text>
+<path d="M330.0,100.0 h414.6 a4,4 0 0 1 4,4 v10.0 a4,4 0 0 1 -4,4 h-414.6 z" fill="#2a78d6"/>
+<text x="756.6" y="113.0" fill="#0b0b0b" font-size="13" text-anchor="start" font-weight="600">45.5</text>
 <text x="318.0" y="143.0" fill="#52514e" font-size="13" text-anchor="end" font-weight="400">TensorRT Edge-LLM 0.11 · DFlash2 (NVFP4)</text>
 <path d="M330.0,130.0 h413.7 a4,4 0 0 1 4,4 v10.0 a4,4 0 0 1 -4,4 h-413.7 z" fill="#8f8d86"/>
 <text x="755.7" y="143.0" fill="#0b0b0b" font-size="13" text-anchor="start" font-weight="600">45.4</text>
-<text x="318.0" y="173.0" fill="#52514e" font-size="13" text-anchor="end" font-weight="400">llama-server · DSpine (same library)</text>
-<path d="M330.0,160.0 h398.0 a4,4 0 0 1 4,4 v10.0 a4,4 0 0 1 -4,4 h-398.0 z" fill="#8f8d86"/>
-<text x="740.0" y="173.0" fill="#0b0b0b" font-size="13" text-anchor="start" font-weight="600">43.7</text>
-<text x="318.0" y="203.0" fill="#52514e" font-size="13" text-anchor="end" font-weight="400">sixi-asi 0.10 · DSpine (UD-Q4_K_XL)</text>
-<path d="M330.0,190.0 h387.9 a4,4 0 0 1 4,4 v10.0 a4,4 0 0 1 -4,4 h-387.9 z" fill="#2a78d6"/>
-<text x="729.9" y="203.0" fill="#0b0b0b" font-size="13" text-anchor="start" font-weight="600">42.6</text>
+<text x="318.0" y="173.0" fill="#0b0b0b" font-size="13" text-anchor="end" font-weight="600">sixi-asi 0.11 · DSpine (UD-Q4_K_XL v3.1, default)</text>
+<path d="M330.0,160.0 h400.8 a4,4 0 0 1 4,4 v10.0 a4,4 0 0 1 -4,4 h-400.8 z" fill="#2a78d6"/>
+<text x="742.8" y="173.0" fill="#0b0b0b" font-size="13" text-anchor="start" font-weight="600">44.0</text>
+<text x="318.0" y="203.0" fill="#52514e" font-size="13" text-anchor="end" font-weight="400">llama-server · DSpine (same library)</text>
+<path d="M330.0,190.0 h398.0 a4,4 0 0 1 4,4 v10.0 a4,4 0 0 1 -4,4 h-398.0 z" fill="#8f8d86"/>
+<text x="740.0" y="203.0" fill="#0b0b0b" font-size="13" text-anchor="start" font-weight="600">43.7</text>
 <text x="318.0" y="233.0" fill="#52514e" font-size="13" text-anchor="end" font-weight="400">sixi-asi 0.9 · DFlash2 drafter</text>
 <path d="M330.0,220.0 h376.9 a4,4 0 0 1 4,4 v10.0 a4,4 0 0 1 -4,4 h-376.9 z" fill="#2a78d6"/>
 <text x="718.9" y="233.0" fill="#0b0b0b" font-size="13" text-anchor="start" font-weight="600">41.4</text>

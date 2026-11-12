@@ -43,7 +43,7 @@ struct IndexedTensorLocation {
 struct SidecarIndex {
     static constexpr const char* kMagic = "SIXIIDX1";
     uint32_t format_version = 1;
-    std::string converter_version = "sixi-asi-0.1.0";
+    std::string converter_version = "sixi-asi-0.11.0";
     std::string manifest_id;
     std::string recipe_hash; // Bound to ModelManifest::compute_recipe_hash()
     uint64_t created_unix_ts = 0;

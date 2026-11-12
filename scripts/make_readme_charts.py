@@ -162,7 +162,8 @@ def main():
     d = json.load(open(a.data))
     os.makedirs(a.out, exist_ok=True)
     for name, fn in (("engines", chart_engines), ("verify-cost", chart_verify), ("long-context", chart_longctx),
-                     ("concurrency", chart_longctx), ("prefill", chart_longctx)):
+                     ("concurrency", chart_longctx), ("prefill", chart_longctx), ("streams", chart_longctx),
+                     ("agents", chart_longctx), ("quality", chart_longctx)):
         if name not in d:
             continue
         for mode, t in THEMES.items():

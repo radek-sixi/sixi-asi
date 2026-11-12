@@ -1,0 +1,70 @@
+diff --git a/include/llama.h b/include/llama.h
+index 428f51f8d..9603f9fe0 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -584,6 +584,12 @@ extern "C" {
+     LLAMA_API uint32_t llama_n_seq_max  (const struct llama_context * ctx);
+     LLAMA_API uint32_t llama_n_rs_seq   (const struct llama_context * ctx);
+ 
++    // Bytes the memory module (attention KV cache plus recurrent state with its rollback ring) of a context with
++    // n_seq_max sequences of n_ctx_seq tokens and an n_rs_seq-deep ring would allocate, computed without allocating
++    // (F16 KV). 0 if it cannot be determined. Lets a caller refuse a configuration that does not fit: on a
++    // unified-memory device an oversized ring stalls the host instead of failing the allocation.
++    LLAMA_API uint64_t llama_model_memory_size(const struct llama_model * model, uint32_t n_ctx_seq, uint32_t n_seq_max, uint32_t n_rs_seq);
++
+     DEPRECATED(LLAMA_API int32_t llama_n_ctx_train(const struct llama_model * model), "use llama_model_n_ctx_train instead");
+     DEPRECATED(LLAMA_API int32_t llama_n_embd     (const struct llama_model * model), "use llama_model_n_embd instead");
+     DEPRECATED(LLAMA_API int32_t llama_n_layer    (const struct llama_model * model), "use llama_model_n_layer instead");
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index a450d8257..a81a59997 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -4433,6 +4433,48 @@ uint32_t llama_n_rs_seq(const llama_context * ctx) {
+     return ctx->get_cparams().n_rs_seq;
+ }
+ 
++uint64_t llama_model_memory_size(const llama_model * model, uint32_t n_ctx_seq, uint32_t n_seq_max, uint32_t n_rs_seq) {
++    if (model == nullptr || model->hparams.vocab_only) {
++        return 0;
++    }
++    llama_cparams cparams = {};
++    cparams.n_seq_max   = std::max<uint32_t>(1, n_seq_max);
++    cparams.n_ctx_seq   = std::max<uint32_t>(1, n_ctx_seq);
++    cparams.n_ctx       = cparams.n_ctx_seq * cparams.n_seq_max;
++    cparams.n_batch     = 512;
++    cparams.n_ubatch    = 512;
++    cparams.offload_kqv = true;
++    cparams.flash_attn  = true;
++    cparams.kv_unified  = false;
++    cparams.ctx_type    = LLAMA_CONTEXT_TYPE_DEFAULT;
++    cparams.ctx_other   = nullptr;
++    // same clamp as the context constructor
++    cparams.n_rs_seq    = (llm_arch_supports_rs_rollback(model->arch) && model->hparams.causal_attn) ? n_rs_seq : 0;
++
++    llama_memory_params params_mem = {
++        /*.type_k    =*/ GGML_TYPE_F16,
++        /*.type_v    =*/ GGML_TYPE_F16,
++        /*.swa_full  =*/ false,
++        /*.ctx_type  =*/ cparams.ctx_type,
++        /*.mem_other =*/ nullptr,
++        /*.no_alloc  =*/ true,
++    };
++    try {
++        std::unique_ptr<llama_memory_i> mem(model->create_memory(params_mem, cparams));
++        if (!mem) {
++            return 0;
++        }
++        uint64_t total = 0;
++        for (const auto & it : mem->memory_breakdown()) {
++            total += it.second;
++        }
++        return total;
++    } catch (const std::exception & err) {
++        LLAMA_LOG_WARN("%s: %s\n", __func__, err.what());
++        return 0;
++    }
++}
++
+ const llama_model * llama_get_model(const llama_context * ctx) {
+     return &ctx->get_model();
+ }

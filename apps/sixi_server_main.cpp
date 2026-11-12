@@ -56,9 +56,12 @@ void usage() {
         "  --kv-type T             KV cache type f16|bf16|q8_0|q4_0 (default: library f16; quantized V enables flash-attn)\n"
         "  --no-neural-drafter     suffix drafter only (no MTP / DFlash2)\n"
         "  --no-spec               plain autoregressive decoding (baseline for A/B)\n"
-        "  --n-rs-seq N            recurrent snapshot ring depth (default 16; bounds O(1) rollback and draft k)\n"
+        "  --n-rs-seq N            recurrent snapshot ring depth (default 16, 8 from --parallel 8; bounds O(1) rollback and draft k)\n"
         "  --device-slots N        device-side prefix snapshot slots (extra sequences; default 4, 0 = host snapshots)\n"
         "  --parallel N            parallel streams: N requests decode at once, their forward passes batched\n"
+        "  --wide-copy-gb N        keep a BF16 copy of the quantized weights (up to N GB of memory) for passes of 160+ rows:\n"
+        "                          +5% aggregate at 32 streams, +10% document prefill; 36 covers the large matrices of a\n"
+        "                          27B model, 54 all of them (default 0 = off)\n"
         "                          (default 1; each stream gets its own --ctx tokens; needs a block drafter or --no-spec)\n"
         "  --no-gpu-sampler        host argmax instead of the GPU backend sampler\n"
         "  --no-mtp-load           do not create the embedded MTP draft context\n"
@@ -97,6 +100,8 @@ int main(int argc, char** argv) {
     int32_t kv_type_k = -1;
     int32_t kv_type_v = -1;
     uint32_t n_rs_seq = 16;   // rollback ring >= max draft length + 1
+    bool n_rs_seq_set = false;
+    uint32_t wide_copy_gb = 0; // kept BF16 copy of quantized weights for wide batches (0 = off)
     uint32_t device_slots = 4;
     bool gpu_sampler = true;
     bool load_mtp = true;
@@ -160,8 +165,9 @@ int main(int argc, char** argv) {
             kv_type_k = t; kv_type_v = t;
         }
         else if (arg == "--no-neural-drafter") use_neural_drafter = false;
-        else if (arg == "--n-rs-seq") n_rs_seq = static_cast<uint32_t>(need_int("--n-rs-seq", next(), 0, 32));
-        else if (arg == "--parallel") parallel = static_cast<uint32_t>(need_int("--parallel", next(), 1, 16));
+        else if (arg == "--n-rs-seq") { n_rs_seq = static_cast<uint32_t>(need_int("--n-rs-seq", next(), 0, 32)); n_rs_seq_set = true; }
+        else if (arg == "--parallel") parallel = static_cast<uint32_t>(need_int("--parallel", next(), 1, 64));
+        else if (arg == "--wide-copy-gb") wide_copy_gb = static_cast<uint32_t>(need_int("--wide-copy-gb", next(), 0, 96));
         else if (arg == "--device-slots") device_slots = static_cast<uint32_t>(need_int("--device-slots", next(), 0, 16));
         else if (arg == "--no-gpu-sampler") gpu_sampler = false;
         else if (arg == "--no-mtp-load") load_mtp = false;
@@ -262,6 +268,14 @@ int main(int argc, char** argv) {
             std::cerr << "Error: --model or --manifest required for llamacpp backend\n";
             return 1;
         }
+        if (wide_copy_gb > 0) {
+            // read by the pinned library (patch 0008) when the first wide pass runs
+            ::setenv("GGML_CUDA_WEIGHT_CACHE_GB", std::to_string(wide_copy_gb).c_str(), 1);
+            ::setenv("GGML_CUDA_WEIGHT_CACHE_MIN_ROWS", "160", 0);
+            if (wide_copy_gb < 50) {
+                ::setenv("GGML_CUDA_WEIGHT_CACHE_MIN_ELEMS", "64000000", 0);
+            }
+        }
         auto lb = std::make_shared<core::LlamaCppBackend>();
         core::LlamaCppBackend::LoadOptions lopts;
         lopts.model_path = model_path;
@@ -274,6 +288,9 @@ int main(int argc, char** argv) {
         lopts.n_threads = n_threads;
         lopts.kv_type_k = kv_type_k;
         lopts.kv_type_v = kv_type_v;
+        // From 8 streams the shared draft length is 3 (shared_draft_k), and every sequence pays the ring in memory
+        // (151 MB per row and sequence for Qwen3.8-27B): 8 deep is ample there, 16 does not fit 32 streams on Thor.
+        if (!n_rs_seq_set && parallel >= 8) n_rs_seq = 8;
         lopts.n_rs_seq = n_rs_seq;
         lopts.device_snapshot_slots = device_slots;
         lopts.n_streams = parallel;
@@ -340,5 +357,11 @@ int main(int argc, char** argv) {
     }
 
     srv.stop();
+    if (auto lb = std::dynamic_pointer_cast<core::LlamaCppBackend>(backend); lb && parallel > 1) {
+        const auto tel = lb->runtime_telemetry();
+        std::cout << "Shared passes: " << tel.batched_passes << ", stream ops: " << tel.batched_ops << " (mean "
+                  << (tel.batched_passes > 0 ? static_cast<double>(tel.batched_ops) / static_cast<double>(tel.batched_passes) : 0.0)
+                  << " streams per pass)\n";
+    }
     return 0;
 }

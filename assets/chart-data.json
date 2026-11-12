@@ -4,12 +4,6 @@
   "subtitle": "Same 5 prompts, 256 generated tokens, greedy, thinking on, batch 1, MAXN. Mean of 5 tasks.",
   "rows": [
    {
-    "label": "sixi-asi 0.10 · DSpine drafter (Q4_K_M)",
-    "tok_s": 45.7,
-    "group": "sixi",
-    "bold": true
-   },
-   {
     "label": "TensorRT Edge-LLM 0.11 · DFlash2 (NVFP4)",
     "tok_s": 45.4,
     "group": "other"
@@ -18,11 +12,6 @@
     "label": "llama-server · DSpine (same library)",
     "tok_s": 43.7,
     "group": "other"
-   },
-   {
-    "label": "sixi-asi 0.10 · DSpine (UD-Q4_K_XL)",
-    "tok_s": 42.6,
-    "group": "sixi"
    },
    {
     "label": "sixi-asi 0.9 · DFlash2 drafter",
@@ -48,6 +37,18 @@
     "label": "llama-server · autoregressive",
     "tok_s": 11.9,
     "group": "other"
+   },
+   {
+    "label": "sixi-asi 0.11 · DSpine drafter (Q4_K_M)",
+    "tok_s": 45.5,
+    "group": "sixi",
+    "bold": true
+   },
+   {
+    "label": "sixi-asi 0.11 · DSpine (UD-Q4_K_XL v3.1, default)",
+    "tok_s": 44.0,
+    "group": "sixi",
+    "bold": true
    }
   ]
  },
@@ -268,6 +269,62 @@
     "label": "~60k tokens",
     "before_s": 299,
     "after_s": 571
+   }
+  ]
+ },
+ "streams": {
+  "title": "Aggregate throughput with concurrent requests: 0.10 and 0.11",
+  "subtitle": "Qwen3.8-27B Q4_K_M + DSpine on Jetson AGX Thor, greedy, 256 tokens per answer, prefill included. 0.10 beyond 4 streams: its code before release.",
+  "before_label": "0.10",
+  "after_label": "0.11",
+  "unit": "",
+  "tick_step": 20,
+  "fmt_before": "{:.1f}",
+  "fmt_after": "{:.1f}",
+  "axis_label": "tokens per second, all streams together (higher is better)",
+  "rows": [
+   {
+    "label": "4 streams",
+    "before_s": 94.2,
+    "after_s": 103.5
+   },
+   {
+    "label": "8 streams",
+    "before_s": 113.5,
+    "after_s": 123.4
+   },
+   {
+    "label": "16 streams",
+    "before_s": 128.8,
+    "after_s": 154.4
+   },
+   {
+    "label": "32 streams",
+    "before_s": 129.4,
+    "after_s": 168.9
+   }
+  ]
+ },
+ "agents": {
+  "title": "16 agents, 17.8k-token prompt each: wait for the next turn",
+  "subtitle": "Every agent loads its own document, then asks two follow-up questions while other agents are still loading. Time to first token.",
+  "before_label": "0.10 scheduling",
+  "after_label": "0.11",
+  "unit": " s",
+  "tick_step": 100,
+  "fmt_before": "{:.0f}",
+  "fmt_after": "{:.1f}",
+  "axis_label": "seconds to first token of a follow-up (lower is better)",
+  "rows": [
+   {
+    "label": "second turn, median",
+    "before_s": 223,
+    "after_s": 2.8
+   },
+   {
+    "label": "slowest follow-up",
+    "before_s": 442,
+    "after_s": 2.9
    }
   ]
  }

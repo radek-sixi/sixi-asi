@@ -1,0 +1,163 @@
+diff --git a/ggml/src/ggml-cuda/common.cuh b/ggml/src/ggml-cuda/common.cuh
+index 00318102d..1952646ee 100644
+--- a/ggml/src/ggml-cuda/common.cuh
++++ b/ggml/src/ggml-cuda/common.cuh
+@@ -1470,6 +1470,16 @@ struct ggml_backend_cuda_context {
+ 
+     // keyed by the get_rows node and by the gated_delta_net node; rebuilt for every evaluated graph
+     std::unordered_map<const ggml_tensor *, ggml_cuda_gdn_inplace_state> gdn_inplace_states;
++
++    // Dequantized copies of quantized weights for the cuBLAS path, kept between passes (GGML_CUDA_WEIGHT_CACHE_GB).
++    // Keyed by the weight's data pointer. See ggml_cuda_weight_cache_get.
++    struct weight_copy {
++        void * data;
++        size_t nbytes;
++    };
++    std::unordered_map<const void *, weight_copy> weight_cache;
++    size_t       weight_cache_bytes  = 0;
++    cudaStream_t weight_cache_stream = nullptr;
+     cudaEvent_t copy_event = nullptr;
+ 
+     cudaStream_t streams[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = {};
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index 0edca6e83..324e5dd87 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -749,6 +749,16 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
+     if (copy_event != nullptr) {
+         CUDA_CHECK(cudaEventDestroy(copy_event));
+     }
++    if (weight_cache_bytes > 0) {
++        GGML_LOG_INFO("%s: weight cache: %zu tensors, %.2f GB\n", __func__, weight_cache.size(), weight_cache_bytes / 1e9);
++    }
++    for (auto & [_, copy] : weight_cache) {
++        CUDA_CHECK(cudaFree(copy.data));
++    }
++    weight_cache.clear();
++    if (weight_cache_stream != nullptr) {
++        CUDA_CHECK(cudaStreamDestroy(weight_cache_stream));
++    }
+     for (int i = 0; i < GGML_CUDA_MAX_DEVICES; ++i) {
+         for (int j = 0; j < GGML_CUDA_MAX_STREAMS; ++j) {
+             if (streams[i][j] != nullptr) {
+@@ -1653,6 +1663,71 @@ struct batched_mul_mat_traits<GGML_TYPE_F16> {
+     static inline auto convert_nc(ggml_type src_type) { return ggml_get_to_fp16_nc_cuda(src_type); }
+ };
+ 
++// Second representation of the weights for wide batches. The cuBLAS path dequantizes every weight on every pass
++// (27B Q4_K_M: 520 ms per forward on Thor) because a quantized weight has no tensor-core form. With
++// GGML_CUDA_WEIGHT_CACHE_GB > 0 the dequantized copy of a model weight is kept (up to that many GB, first come):
++// a pass then reads the copy instead of converting. The copy is filled on its own stream, so the conversion runs
++// once even while a CUDA graph is being captured and stays out of the graph.
++static size_t ggml_cuda_weight_cache_budget() {
++    static const size_t budget = [] {
++        const char * e = getenv("GGML_CUDA_WEIGHT_CACHE_GB");
++        return e != nullptr ? (size_t) (atof(e) * 1e9) : (size_t) 0;
++    }();
++    return budget;
++}
++
++// a model weight that may get a kept copy (GGML_CUDA_WEIGHT_CACHE_MIN_ELEMS limits it to the large matrices)
++static bool ggml_cuda_weight_cache_eligible(const ggml_tensor * w) {
++    static const int64_t min_elems = [] {
++        const char * e = getenv("GGML_CUDA_WEIGHT_CACHE_MIN_ELEMS");
++        return e != nullptr ? (int64_t) atoll(e) : (int64_t) 0;
++    }();
++    return ggml_cuda_weight_cache_budget() > 0 && w->buffer != nullptr && w->view_src == nullptr &&
++        ggml_is_quantized(w->type) && ggml_nelements(w) >= min_elems && ggml_is_contiguously_allocated(w) &&
++        ggml_backend_buffer_get_usage(w->buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS;
++}
++
++// Thor: with a kept copy the cuBLAS path needs no dequantization per pass and wins from fewer rows than the 320
++// of the uncached path. One forward of 96 / 128 / 192 / 256 rows: 263 / 325 / 505 / 623 ms with MMQ, 267 / 276 /
++// 308 / 336 ms with a copy of every weight, 269 / 297 / 373 / 428 ms with a copy of the large matrices only. In a
++// server the gain starts near 190 rows, hence the default of 160. GGML_CUDA_WEIGHT_CACHE_MIN_ROWS.
++static bool ggml_cuda_weight_cache_wide_batch(const ggml_tensor * w, int64_t rows, int cc) {
++    static const int64_t min_rows = [] {
++        const char * e = getenv("GGML_CUDA_WEIGHT_CACHE_MIN_ROWS");
++        return e != nullptr ? (int64_t) atoll(e) : (int64_t) 160;
++    }();
++    return GGML_CUDA_CC_IS_NVIDIA(cc) && cc == GGML_CUDA_CC_THOR && rows >= min_rows && ggml_cuda_weight_cache_eligible(w);
++}
++
++template <typename F>
++static void * ggml_cuda_weight_cache_get(ggml_backend_cuda_context & ctx, const ggml_tensor * w, size_t elem_size, F && fill) {
++    const size_t budget = ggml_cuda_weight_cache_budget();
++    if (!ggml_cuda_weight_cache_eligible(w)) {
++        return nullptr;
++    }
++    const auto it = ctx.weight_cache.find(w->data);
++    if (it != ctx.weight_cache.end()) {
++        return it->second.data;
++    }
++    const size_t nbytes = (size_t) ggml_nelements(w) * elem_size;
++    if (ctx.weight_cache_bytes + nbytes > budget) {
++        return nullptr;
++    }
++    void * buf = nullptr;
++    if (cudaMalloc(&buf, nbytes) != cudaSuccess) {
++        (void) cudaGetLastError();
++        return nullptr;
++    }
++    if (ctx.weight_cache_stream == nullptr) {
++        CUDA_CHECK(cudaStreamCreateWithFlags(&ctx.weight_cache_stream, cudaStreamNonBlocking));
++    }
++    fill(buf, ctx.weight_cache_stream);
++    CUDA_CHECK(cudaStreamSynchronize(ctx.weight_cache_stream));
++    ctx.weight_cache[w->data] = { buf, nbytes };
++    ctx.weight_cache_bytes += nbytes;
++    return buf;
++}
++
+ template<ggml_type compute_type>
+ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+     using traits = batched_mul_mat_traits<compute_type>;
+@@ -1692,8 +1767,23 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
+     bool is_src0_cont_2 = ggml_is_contiguous_2(src0);
+     bool is_src1_cont_2 = ggml_is_contiguous_2(src1);
+ 
++    const cuda_t * src0_cached = nullptr;
++    if (src0->type != compute_type && compute_type == GGML_TYPE_BF16 && ggml_is_contiguously_allocated(src0)) {
++        src0_cached = (const cuda_t *) ggml_cuda_weight_cache_get(ctx, src0, sizeof(cuda_t), [&](void * buf, cudaStream_t s) {
++            const auto convert_func = traits::convert(src0->type);
++            GGML_ASSERT(convert_func != nullptr);
++            convert_func(src0->data, (cuda_t *) buf, ggml_nelements(src0), s);
++        });
++    }
++
+     if (src0->type == compute_type) {
+         src0_ptr = (const cuda_t *) src0->data;
++    } else if (src0_cached != nullptr) {
++        const size_t src0_bs = ggml_blck_size(src0->type);
++        s01 *= src0_bs;
++        s02 *= src0_bs;
++        s03 *= src0_bs;
++        src0_ptr = src0_cached;
+     } else {
+         src0_alloc.alloc(ggml_nelements(src0));
+ 
+@@ -2261,6 +2351,10 @@ static bool ggml_cuda_should_fuse_mul_mat_q(const ggml_tensor * up, const ggml_t
+     if (use_mmvq || !ggml_cuda_should_use_mmq(x_up->type, cc, ncols, /*n_experts =*/ is_id ? x_up->ne[2] : 0)) {
+         return false;
+     }
++    // wide batch with kept dequantized copies: the unfused matmuls take the cuBLAS path
++    if (!is_id && ggml_cuda_weight_cache_wide_batch(x_up, ncols, cc)) {
++        return false;
++    }
+ 
+     // The fused kernel needs one block per tile (no stream-k split), so only fuse if the tiling is efficient.
+     return ggml_cuda_mmq_fusion_is_efficient(x_up->type, ggml_prec_get_src(up, 1), x_up->ne[1], ncols, nchannels, device);
+@@ -2310,6 +2404,13 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
+         ggml_cuda_mul_mat_f(ctx, src0, src1, nullptr, dst);
+         return;
+     }
++    if (ggml_cuda_weight_cache_wide_batch(src0, ne11, cc) &&
++        (ctx.weight_cache.count(src0->data) > 0 ||
++         ctx.weight_cache_bytes + (size_t) ggml_nelements(src0) * sizeof(nv_bfloat16) <= ggml_cuda_weight_cache_budget())) {
++        // wide batch and a kept dequantized copy (or room for one): tensor cores through cuBLAS
++        ggml_cuda_mul_mat_cublas(ctx, src0, src1, dst);
++        return;
++    }
+     if (ggml_cuda_should_use_mmvq(src0->type, cc, ne11)) {
+         ggml_cuda_mul_mat_vec_q(ctx, src0, src1, nullptr, dst);
+         return;
