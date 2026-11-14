@@ -14,7 +14,7 @@ and **171 tok/s in total with 32 requests at once**. [How it was measured](docs/
 ## Quick start
 
 Download `sixi-asi-<version>-jetson-thor-aarch64.tar.gz` and its `.sha256` from the
-[latest release](https://github.com/radeksixi/sixi-asi/releases/latest), then:
+[releases page](https://github.com/radeksixi/sixi-asi/releases), then:
 
 ```bash
 sha256sum -c sixi-asi-*-jetson-thor-aarch64.tar.gz.sha256
