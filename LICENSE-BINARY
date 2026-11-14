@@ -1,0 +1,28 @@
+Sixi-ASI Engine: binary license
+
+Copyright (c) 2026 radeksixi. All rights reserved.
+
+"The Software" is the Sixi-ASI Engine as distributed in binary form in this archive: the programs in bin/, the
+library in lib/, the `sixi` command and the accompanying files.
+
+1. Use. Anyone may use the Software free of charge, for any purpose, including commercial use, on any number of
+   machines.
+
+2. Redistribution. Anyone may copy and redistribute the Software, provided the archive is passed on complete and
+   unmodified, together with this license.
+
+3. Restrictions. You may not modify, reverse engineer, decompile or disassemble the Software, or remove or alter
+   its notices, except where the law that applies to you permits it despite this restriction.
+
+4. Third-party software. The Software contains third-party components that are licensed under their own terms
+   (see licenses/). Nothing in this license limits the rights those terms give you in those components.
+
+5. Models. No model is part of the Software. Models that the `sixi` command downloads are provided by their
+   authors under their own licenses.
+
+6. No warranty. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT
+   NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO
+   EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+   CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR ITS USE.
+
+Earlier versions published under the Apache License 2.0 remain under that license.
